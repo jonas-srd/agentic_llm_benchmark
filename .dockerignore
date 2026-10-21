@@ -1,0 +1,9 @@
+*
+!app/
+!app/**
+!migrations/
+!migrations/**
+!requirements.lock
+!alembic.ini
+!Dockerfile
+**/__pycache__

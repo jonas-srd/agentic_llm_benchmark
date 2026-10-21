@@ -1,0 +1,29 @@
+{
+  "id": "medical-pilot-v1",
+  "title": "Medical Agent Simulation – Technical Pilot",
+  "version": "1",
+  "consent_version": "pilot-1",
+  "consent_text": "Technical preview using a fictional case. This is placeholder consent text for development; replace it with the approved study information before recruitment. Do not enter real patient data.",
+  "max_participants": 10,
+  "max_doctor_turns": 6,
+  "conditions": ["Agent_Simulation"],
+  "steps": [
+    {"id": "intro", "title": "Introduction", "kind": "information", "instructions": "Observe how the doctor, patient and lab agents solve a fictional case."},
+    {"id": "baseline", "title": "Initial assessment", "kind": "questionnaire", "questions": [
+      {"id": "ai_familiarity", "label": "How familiar are you with AI assistants?", "kind": "number", "minimum": 1, "maximum": 7}
+    ]},
+    {"id": "test-task", "title": "Agent simulation", "kind": "simulation", "case_id": "synthetic-001"},
+    {"id": "test-perf", "title": "Evaluation", "kind": "questionnaire", "questions": [
+      {"id": "trust", "label": "How much do you trust the result?", "kind": "number", "minimum": 1, "maximum": 7},
+      {"id": "comment", "label": "What did you observe?", "kind": "text", "required": false}
+    ]},
+    {"id": "test-probe", "title": "Final check", "kind": "final_check", "instructions": "May we include your data in the analysis? Your choice does not affect completion or payment."}
+  ],
+  "cases": [{
+    "id": "synthetic-001", "title": "Fictional fatigue case",
+    "opening": "A fictional adult patient reports fatigue and reduced exercise tolerance.",
+    "patient_facts": "The fictional patient is 35 years old. Fatigue developed gradually over three months. There is no fever, chest pain or shortness of breath at rest. The diet has contained little iron. Other history is unspecified.",
+    "labs": {"cbc": "Hemoglobin 9.8 g/dL; MCV 72 fL. Synthetic values.", "ferritin": "Ferritin 7 ng/mL. Synthetic value."},
+    "reference_diagnosis": "Iron deficiency anemia (synthetic demonstration label, not a validated benchmark case)"
+  }]
+}
