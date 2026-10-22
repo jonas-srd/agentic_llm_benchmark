@@ -11,3 +11,6 @@ __pycache__/
 data/
 .railway/
 node_modules/
+.next/
+dist/
+*.tsbuildinfo

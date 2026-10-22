@@ -1,4 +1,4 @@
-name: Backend checks
+name: Test and build
 on: [push, pull_request]
 jobs:
   test:
@@ -8,29 +8,25 @@ jobs:
         image: postgres:17
         env:
           POSTGRES_USER: benchmark
-          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_PASSWORD: test-only
           POSTGRES_DB: benchmark
-        ports: ["5432:5432"]
+        ports: [5432:5432]
         options: >-
-          --health-cmd "pg_isready -U benchmark"
-          --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U benchmark" --health-interval 5s
+          --health-timeout 5s --health-retries 10
     env:
-      ADMIN_API_KEY: ci-admin-key-not-for-production-000000000
-      SESSION_SECRET: ci-session-secret-not-for-production-0000
-      DATABASE_URL: postgresql+psycopg://benchmark:test-only-password@localhost:5432/benchmark
+      TEST_DATABASE_URL: postgresql://benchmark:test-only@localhost:5432/benchmark
+      NEXT_TELEMETRY_DISABLED: 1
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: '3.12'
-          cache: pip
-      - run: pip install -r requirements.lock
-      - run: pip install --no-deps -e .
-      - run: alembic upgrade head
-      - run: alembic check
-      - run: pytest -q
-      - name: Test against PostgreSQL with isolated schemas
-        run: pytest -q
-        env:
-          TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
-      - run: docker build -t agentic-benchmark .
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm run test:web
+      - run: docker build -t clinical-api .
+      - run: docker build -f apps/web/Dockerfile -t clinical-web .

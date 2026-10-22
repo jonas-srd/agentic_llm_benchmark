@@ -15,17 +15,37 @@ services:
     build: .
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://benchmark:local-development-only@postgres:5432/benchmark
-    command: ["sh", "-c", "alembic upgrade head && python -m app.server"]
-    ports: ["8000:8000"]
+      APP_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8000
+      DATABASE_URL: postgresql://benchmark:local-development-only@postgres:5432/benchmark
+    command:
+      [
+        "sh",
+        "-c",
+        "node apps/backend/dist/apps/backend/src/migrate.js && node apps/backend/dist/apps/backend/src/index.js",
+      ]
+    ports: ["127.0.0.1:8000:8000"]
     depends_on:
-      postgres: {condition: service_healthy}
+      postgres: { condition: service_healthy }
   worker:
     build: .
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://benchmark:local-development-only@postgres:5432/benchmark
-    command: ["python", "-m", "app.worker"]
+      APP_ENV: production
+      DATABASE_URL: postgresql://benchmark:local-development-only@postgres:5432/benchmark
+    command: ["node", "apps/backend/dist/apps/backend/src/worker.js"]
+    depends_on: [api]
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      APP_ENV: development
+      PORT: 3000
+      BACKEND_URL: http://api:8000
+      PUBLIC_FRONTEND_URL: http://localhost:3000
+    ports: ["127.0.0.1:3000:3000"]
     depends_on: [api]
 volumes:
   postgres:

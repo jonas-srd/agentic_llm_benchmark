@@ -1,0 +1,32 @@
+{
+  "name": "clinical-reasoning-study",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "apps/backend",
+    "packages/shared"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "dev:web": "npm run dev --workspace @clinical/web",
+    "dev:backend": "node --env-file-if-exists=.env --import tsx apps/backend/src/index.ts",
+    "dev:worker": "node --env-file-if-exists=.env --import tsx apps/backend/src/worker.ts",
+    "migrate": "node --env-file-if-exists=.env --import tsx apps/backend/src/migrate.ts",
+    "build": "npm run build --workspace @clinical/shared && npm run build --workspace @clinical/backend && npm run build --workspace @clinical/web",
+    "typecheck": "tsc -p apps/backend/tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",
+    "pretest": "npm run build --workspace @clinical/shared",
+    "test": "tsx --test apps/backend/tests/*.test.ts packages/shared/tests/*.test.ts",
+    "test:web": "node --test apps/web/tests/http.test.mjs",
+    "format": "prettier --write apps/backend/src apps/backend/tests apps/web packages/shared/src packages/shared/tests scripts/*.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.2"
+  }
+}

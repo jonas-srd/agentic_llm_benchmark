@@ -1,59 +1,87 @@
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "id": {
-      "pattern": "^[a-zA-Z0-9_-]{1,64}$",
-      "title": "Id",
-      "type": "string"
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
     },
     "title": {
-      "maxLength": 200,
+      "type": "string",
       "minLength": 1,
-      "title": "Title",
-      "type": "string"
+      "maxLength": 200
     },
     "opening": {
-      "maxLength": 3000,
+      "type": "string",
       "minLength": 1,
-      "title": "Opening",
-      "type": "string"
+      "maxLength": 3000
     },
     "patient_facts": {
-      "maxLength": 12000,
+      "type": "string",
       "minLength": 1,
-      "title": "Patient Facts",
-      "type": "string"
+      "maxLength": 12000
     },
     "labs": {
-      "additionalProperties": {
-        "type": "string"
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 100
       },
-      "maxProperties": 50,
-      "title": "Labs",
-      "type": "object"
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 12000
+      }
+    },
+    "media": {
+      "default": [],
+      "maxItems": 20,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "test": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "caption": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "asset_id",
+          "test",
+          "caption"
+        ],
+        "additionalProperties": false
+      }
     },
     "reference_diagnosis": {
-      "maxLength": 1000,
+      "type": "string",
       "minLength": 1,
-      "title": "Reference Diagnosis",
-      "type": "string"
+      "maxLength": 1000
     },
     "source": {
       "default": "Synthetic",
+      "type": "string",
       "enum": [
         "MedQA",
         "NEJM",
         "MediQ",
         "Synthetic"
-      ],
-      "title": "Source",
-      "type": "string"
+      ]
     },
     "source_id": {
       "default": "",
-      "maxLength": 300,
-      "title": "Source Id",
-      "type": "string"
+      "type": "string",
+      "maxLength": 300
     }
   },
   "required": [
@@ -61,8 +89,11 @@
     "title",
     "opening",
     "patient_facts",
-    "reference_diagnosis"
+    "labs",
+    "media",
+    "reference_diagnosis",
+    "source",
+    "source_id"
   ],
-  "title": "CaseSpec",
-  "type": "object"
+  "additionalProperties": false
 }
