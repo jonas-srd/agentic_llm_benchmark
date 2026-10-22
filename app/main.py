@@ -1,8 +1,10 @@
 import secrets
 import time
+from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from app.config import get_settings
@@ -10,6 +12,8 @@ from app.db import session_factory
 from app.models import AgentMessage, AgentRun, ParticipantSession, StepResponse, Study
 from app.schemas import Answer, Enroll, MODEL_IDS, StudyConfig
 from app.security import check_admin, check_session, issue_token
+from app.clinical import add_case_attempts, assign_cases, clinical_export, register_clinical_routes
+from app.preview import register_preview
 
 
 def public_step(session):
@@ -22,9 +26,13 @@ def public_step(session):
 
 
 def session_view(session):
+    clinical_steps = [s for s in session.snapshot["steps"] if s["kind"] == "diagnosis"]
     result = {"id": session.id, "status": session.status, "step_index": session.step_index,
               "total_steps": len(session.snapshot["steps"]), "revision": session.revision,
-              "step": public_step(session), "include_in_analysis": session.include_in_analysis}
+              "step": public_step(session), "include_in_analysis": session.include_in_analysis,
+              "workflow": session.snapshot.get("workflow", "agent"),
+              "is_demo": session.snapshot.get("is_demo", False), "total_cases": len(clinical_steps),
+              "completed_cases": sum(s["kind"] == "diagnosis" for s in session.snapshot["steps"][:session.step_index])}
     if session.status == "completed":
         code = session.snapshot.get("completion_code")
         result["completion_url"] = f"https://app.prolific.com/submissions/complete?cc={code}" if code else None
@@ -58,6 +66,8 @@ def create_app(settings=None, factory=None):
     settings = settings or get_settings()
     factory = factory or session_factory()
     app = FastAPI(title="Agentic LLM Benchmark API", version="0.1.0", docs_url="/docs", redoc_url=None)
+    static = Path(__file__).parent / "static"
+    app.mount("/assets", StaticFiles(directory=static), name="assets")
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_methods=["GET", "POST"],
                        allow_headers=["Authorization", "Content-Type", "X-Admin-Key"])
@@ -67,9 +77,13 @@ def create_app(settings=None, factory=None):
         # Count the actual streamed body, including requests without Content-Length.
         if request.method in ("POST", "PUT", "PATCH"):
             chunks, size = [], 0
+            body_limit = 256_000
+            if request.url.path == "/v1/admin/studies" and secrets.compare_digest(
+                    request.headers.get("x-admin-key", ""), settings.admin_api_key.get_secret_value()):
+                body_limit = 2_500_000
             async for chunk in request.stream():
                 size += len(chunk)
-                if size > 256_000:
+                if size > body_limit:
                     return JSONResponse({"detail": "Request too large"}, status_code=413)
                 chunks.append(chunk)
             request._body = b"".join(chunks)
@@ -77,6 +91,10 @@ def create_app(settings=None, factory=None):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        ) if not request.url.path.startswith("/docs") else "default-src 'self' https: 'unsafe-inline' data:"
         return response
 
     def database():
@@ -93,7 +111,11 @@ def create_app(settings=None, factory=None):
 
     @app.get("/")
     def root():
-        return {"service": "Agentic LLM Benchmark", "version": "0.1.0", "docs": "/docs"}
+        return FileResponse(static / "index.html")
+
+    @app.get("/study/{study_id}", include_in_schema=False)
+    def study_page(study_id: str):
+        return FileResponse(static / "index.html")
 
     @app.get("/health/live")
     def live():
@@ -127,6 +149,8 @@ def create_app(settings=None, factory=None):
         study = db.get(Study, study_id)
         if not study:
             raise HTTPException(404, "Study not found")
+        if study.config.get("is_demo"):
+            raise HTTPException(409, "Demo studies cannot be activated for recruitment")
         if not study.config.get("prolific_study_id") or not study.config.get("completion_code"):
             raise HTTPException(409, "Set Prolific study ID and completion code in a new study configuration")
         if not settings.openrouter_api_key.get_secret_value():
@@ -154,6 +178,9 @@ def create_app(settings=None, factory=None):
         c = study.config
         return {"id": study.id, "title": c["title"], "version": c["version"],
                 "consent_version": c["consent_version"], "consent_text": c["consent_text"],
+                "workflow": c.get("workflow", "agent"), "is_demo": c.get("is_demo", False),
+                "cases_per_participant": c.get("cases_per_participant", 0),
+                "pool_size": len(c["cases"]), "sources": sorted({case.get("source", "Synthetic") for case in c["cases"]}),
                 "steps": [{k: s[k] for k in ("id", "title", "kind")} for s in c["steps"]]}
 
     @app.post("/v1/studies/{study_id}/sessions", status_code=201)
@@ -180,10 +207,11 @@ def create_app(settings=None, factory=None):
             study_id=study_id, prolific_pid=body.PROLIFIC_PID, prolific_study_id=body.STUDY_ID,
             prolific_session_id=body.SESSION_ID, token_hash=token_hash,
             model_id=secrets.choice(config["models"]), condition=secrets.choice(config["conditions"]),
-            snapshot=config,
+            snapshot=assign_cases(config),
         )
         db.add(participant)
         try:
+            add_case_attempts(db, participant)
             db.commit()
         except IntegrityError:
             db.rollback()
@@ -209,6 +237,10 @@ def create_app(settings=None, factory=None):
         if not step or step["id"] != step_id or session.status != "active":
             raise HTTPException(409, "Submit the current step in order")
         validate_answers(step, body.answers)
+        if step["kind"] == "diagnosis":
+            raise HTTPException(409, "Submit a diagnosis through the case endpoint")
+        if session.snapshot.get("workflow") == "clinician" and body.answers.get("physician") is False:
+            raise HTTPException(422, "This study is for qualified medical doctors")
         if step["kind"] == "final_check" and body.include_in_analysis is None:
             raise HTTPException(422, "Analysis inclusion choice required")
         if step["kind"] != "final_check" and body.include_in_analysis is not None:
@@ -276,7 +308,7 @@ def create_app(settings=None, factory=None):
                     "model_id": session.model_id, "condition": session.condition,
                     "created_at": session.created_at, "completed_at": session.completed_at,
                     "consent_version": session.snapshot["consent_version"], "study_version": session.snapshot["version"],
-                    "responses": [], "runs": []}
+                    "responses": [], "runs": [], "clinical_cases": clinical_export(db, session)}
             for r in db.scalars(select(StepResponse).where(StepResponse.session_id == session.id)):
                 item["responses"].append({"step_id": r.step_id, "payload": r.payload, "created_at": r.created_at})
             for run in db.scalars(select(AgentRun).where(AgentRun.session_id == session.id)):
@@ -292,4 +324,6 @@ def create_app(settings=None, factory=None):
             output.append(item)
         return {"sessions": output, "next_offset": offset + limit if len(output) == limit else None}
 
+    register_clinical_routes(app, database, owned, session_view)
+    register_preview(app, settings, database, session_view)
     return app

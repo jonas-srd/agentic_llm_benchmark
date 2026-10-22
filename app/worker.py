@@ -11,6 +11,7 @@ from app.db import session_factory
 from app.models import AgentMessage, AgentRun, ParticipantSession
 from app.openrouter import OpenRouter, ProviderError
 from app.schemas import StudyConfig
+from app.clinical_worker import claim_turn, process_turn
 
 log = logging.getLogger("worker")
 LEASE_SECONDS = 180
@@ -89,6 +90,10 @@ def main():
         signal.signal(sig, lambda *_: stop.set())
     while not stop.is_set():
         try:
+            turn_id = claim_turn(factory, worker_id)
+            if turn_id:
+                process_turn(factory, provider, turn_id, worker_id)
+                continue
             run_id = claim_run(factory, worker_id)
             if run_id:
                 process_run(factory, provider, run_id, worker_id)

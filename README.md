@@ -1,6 +1,26 @@
 # Agentic LLM Benchmark
 
-Backend für eine Prolific-Studie mit **Doctor Agent**, **Patient Agent** und **Lab Agent**. API und Worker werden als getrennte Railway-Dienste betrieben, Daten und Aufträge liegen in PostgreSQL. Eine Teilnehmeroberfläche ist der nächste Ausbauschritt; die API ist unter `/docs` dokumentiert.
+Studienplattform mit englischer Teilnehmeroberfläche für Ärzte, Prolific-Anbindung und **Doctor Agent**, **Patient Agent** und **Lab Agent**. Frontend und API werden gemeinsam ausgeliefert, der LLM-Worker läuft separat. Railway verwendet PostgreSQL; lokal ist SQLite möglich. Die Oberfläche liegt unter `/`, die API-Dokumentation unter `/docs`.
+
+## Teilnehmeroberfläche und Diagnoseablauf
+
+Der Workflow `clinician` setzt die menschlichen Ärzte an die Stelle des Doctor-Agenten. Sie sehen keine KI-Diagnosevorschläge. Der vorhandene Workflow `agent` mit autonomem Doctor-Agent bleibt für Vergleichsläufe über die API erhalten.
+
+- Einwilligung, ärztlicher Hintergrund, zugewiesene Fälle, abschließender Analyse-Einschluss und Prolific-Rückkehr.
+- **150 Fälle als Gesamtpool**, daraus eine konfigurierbare zufällige Teilmenge pro Teilnehmer (`cases_per_participant`, standardmäßig 5). Die Zuweisung erfolgt ohne Wiederholung innerhalb einer Sitzung und bleibt gespeichert. Fall- und Modellhäufigkeiten über alle Teilnehmer sind nicht blockweise ausbalanciert.
+- **Maximal 3 Fragerunden pro Fall**, gemeinsam für Patient und Labor. Eine Patientenfrage oder eine Auswahl von bis zu 10 verfügbaren Tests in einer Absendung zählt als eine Runde.
+- Eine Diagnose ist bereits vor der ersten Frage möglich. Nach Runde 3 ist sie der einzige reguläre nächste Schritt. Während einer laufenden Anfrage wird ihre Antwort abgewartet. Diagnose und Konfidenz (0–100 %) werden nach Bestätigung unveränderlich gespeichert.
+- Fehlgeschlagene oder unterbrochene Antworten werden nicht automatisch wiederholt und verbrauchen keine Runde. Ein neuer, bewusst ausgelöster Versuch kann erneut LLM-Kosten verursachen. Nach insgesamt 6 Versuchen pro Fall sind keine weiteren Anfragen möglich; der Fall bleibt diagnostizierbar, Fehler stehen im Forschungsexport.
+- Neuladen im selben Browser-Tab stellt die Sitzung wieder her. Der Zugangstoken und nicht abgeschickte Diagnose-/Frageentwürfe liegen in `sessionStorage`. Ein geschlossener Tab bzw. gelöschter Browserspeicher erfordert eine noch zu ergänzende Wiederherstellung durch die Studienleitung.
+- Die Fallansicht, alle Antworten, die endgültige Diagnose, Zeitstempel und Provider-Metadaten sind serverseitig gespeichert. Referenzdiagnosen und versteckte Patientenfakten werden nie an das Frontend gesendet.
+
+**Aktueller Inhalt:** Drei ausdrücklich als synthetisch markierte Demo-Fälle. Die ausgewählten MedQA-, NEJM- und MediQ-Fälle werden vom Studienverantwortlichen noch bereitgestellt. Es wurden keine 150 Datensatzfälle erfunden oder als bereits geladen ausgegeben.
+
+### Die 150 Fälle später einpflegen
+
+`examples/study.clinician.preview.json` enthält eine vollständige, inaktive Clinician-Konfiguration mit drei Demo-Fällen. `examples/case.schema.json` beschreibt das Fallformat. Pro Fall werden `id`, ein neutraler `title`, `opening`, `patient_facts`, `labs` (Testname → Originalbefund), `reference_diagnosis`, `source` (`MedQA`, `NEJM`, `MediQ` oder `Synthetic`) und optional `source_id` verwendet. Titel, Eingangsvignette und Testnamen sind sichtbar und dürfen die Referenzdiagnose nicht vorwegnehmen. Bilder werden in dieser Version noch nicht unterstützt; bildabhängige Fälle vor dem Import prüfen.
+
+Die echten Fälle ersetzen das Array `cases`; maximal 150 Einträge. `cases_per_participant` legt die Teilmenge fest. Die Konfiguration enthält die Schritte vor dem Fallblock und einen abschließenden `final_check`; die API fügt die zugewiesenen Diagnoseschritte beim Einschreiben hinzu. IDs mit Präfix `clinical-` sind dafür reserviert. Für den Studienstart eine neue `id`/`version`, freigegebene Einwilligung, `is_demo: false`, die echte `prolific_study_id` und den `completion_code` setzen. Die Konfiguration mit Admin-Zugang importieren und separat aktivieren. Demo-Studien sind nicht aktivierbar.
 
 ## Studienmodell
 
@@ -16,7 +36,7 @@ Die IDs wurden am 21.10.2026 im OpenRouter-Modellkatalog geprüft. Es gibt keine
 
 Die [Referenzstudie](https://experimentnext.vercel.app/study/test-probe?debug=1&domain=Deduction&condition=Control_Group) dient als Vorbild für Einwilligung, Gruppenzuweisung, sequenzielle Phasen, Fragebögen, Wiederaufnahme und den abschließenden Analyse-Einschluss. Das ist eine eigene Implementierung anhand des sichtbaren Ablaufs; der Quellcode der Referenz lag nicht vor. Beliebige Baseline-, Trainings-, Test- und Follow-up-Schritte können in der Studienkonfiguration angelegt werden. Mehrtägige Terminfreigaben und automatische Einladungen sind noch nicht implementiert.
 
-Der technische Pilot enthält einen **synthetischen Demonstrationsfall und Platzhalter für die Einwilligung**, keine validierten medizinischen Benchmark-Fälle und keinen fertigen Forschungsfragebogen. Er ist standardmäßig inaktiv.
+Der ältere technische Agentenpilot (`examples/study.preview.json`) enthält einen synthetischen Demonstrationsfall. Beide Pilotkonfigurationen sind keine freigegebenen Forschungsprotokolle.
 
 ## Ablauf und Daten
 
@@ -58,7 +78,9 @@ In einem zweiten Terminal:
 .venv/Scripts/python -m app.worker
 ```
 
-API: <http://localhost:8000/docs>. SQLite ist ausschließlich für die lokale Entwicklung vorgesehen. Für lokales PostgreSQL: `docker compose up --build` mit ausgefüllter `.env`.
+**Frontend: <http://localhost:8000/>**, API: <http://localhost:8000/docs>. Es ist kein separater Frontend-Build und kein zusätzlicher Node-Dienst nötig. Der Startknopf auf der lokalen Homepage legt eine Demo-Sitzung mit drei zufällig geordneten synthetischen Fällen an. Patient/Lab verwenden dabei echte OpenRouter-Aufrufe. Der Worker muss laufen; es gibt keinen stillen Mock-Fallback.
+
+Die Vorschau-Endpunkte sind ausschließlich bei `APP_ENV=development` und einer Verbindung von `127.0.0.1`/`::1` erreichbar. Bei Zugriff durch einen Container-Proxy kann diese lokale Vorschau bewusst gesperrt sein; dann eine reguläre Teststudie verwenden. SQLite ist ausschließlich für die lokale Entwicklung vorgesehen. Für lokales PostgreSQL: `docker compose up --build` mit ausgefüllter `.env`.
 
 Der inaktive Pilot lässt sich mit `.venv/Scripts/python scripts/seed_preview.py` anlegen. Für Zugriff und Testeinschreibung `X-Admin-Key` mitsenden. Die Beispiel-IDs zum Testen müssen jeweils 24 alphanumerische Zeichen besitzen. Es findet dadurch keine Prolific-Rekrutierung statt.
 
@@ -74,6 +96,10 @@ Der inaktive Pilot lässt sich mit `.venv/Scripts/python scripts/seed_preview.py
 | `POST /v1/studies/{id}/sessions` | Einschreiben; keine Modell-/Bedingungs-Auswahl durch Client |
 | `GET /v1/sessions/{id}` | Aktueller Stand; `Authorization: Bearer <session_token>` |
 | `POST /v1/sessions/{id}/steps/{step}` | `{request_id, revision, answers, include_in_analysis}` |
+| `GET /v1/sessions/{id}/cases/{step}` | Aktueller Fall, sichtbare Informationen, Runden und Antworten; Sitzungstoken |
+| `POST /v1/sessions/{id}/cases/{step}/questions` | `{request_id, revision, target: "patient"\|"lab", question, tests}`; persistenter Auftrag |
+| `POST /v1/sessions/{id}/cases/{step}/diagnosis` | `{request_id, revision, diagnosis, confidence}`; speichert und geht zum nächsten Fall |
+| `GET /v1/preview`, `POST /v1/preview/sessions` | Lokale Demo-Information bzw. Beginn mit `{consent: true}`; in Produktion nicht verfügbar |
 | `POST /v1/sessions/{id}/runs` | Simulation einreihen; wiederholter Aufruf liefert denselben Auftrag |
 | `GET /v1/sessions/{id}/runs/{run}` | Status, bisherige Nachrichten und Ergebnis |
 | `GET /v1/admin/models` | Festgelegte Modelle; Admin-Key |
@@ -96,7 +122,7 @@ Vorgesehen: **api + worker + Postgres**, keine öffentlichen Datenbankports. [Ra
 
 **Deployment-Stand 21.10.2026:** Railway-Konto erfolgreich verbunden. Das Anlegen des Projekts wurde vom Railway-Dienst mit `Deploys have been paused temporarily` abgelehnt. Daher besteht noch kein bestätigtes Live-Deployment.
 
-Der Teilnehmer-Link wird später auf die **Frontend-Seite** zeigen, z. B. `/study/intro?PROLIFIC_PID=...&STUDY_ID=...&SESSION_ID=...`. Diese API alleine ist noch kein nutzbarer Prolific-Studienlink.
+Der Teilnehmer-Link zeigt auf die **Frontend-Seite** `/study/<study-id>?PROLIFIC_PID=...&STUDY_ID=...&SESSION_ID=...`. Die Oberfläche übernimmt die drei Prolific-Parameter und gibt die Prolific-Abschluss-URL erst nach vollständiger Speicherung frei. Studien müssen dafür bereits aktiviert sein. Die Homepage ohne Studien-ID bietet in Produktion keine Testeinschreibung.
 
 ## Tests und Grenzen
 
@@ -104,7 +130,7 @@ Der Teilnehmer-Link wird später auf die **Frontend-Seite** zeigen, z. B. `/stud
 .venv/Scripts/python -m pytest -q
 ```
 
-Automatisierte Tests nutzen simulierte LLM-Antworten und verursachen keine API-Kosten. Sie prüfen den kompletten Studienfluss, getrennte Rolleninformationen, feste Modellzuweisung, Zugriffsschutz, Idempotenz, Parallelität, Kapazitätsgrenzen, Fehlerbehandlung und den von Analyse-Einschluss unabhängigen Abschluss.
+Automatisierte Tests nutzen simulierte LLM-Antworten und verursachen keine API-Kosten. Sie prüfen den kompletten Studienfluss, getrennte Rolleninformationen, feste Modellzuweisung, Zugriffsschutz, Idempotenz, Parallelität, Kapazitätsgrenzen, Fehlerbehandlung und den von Analyse-Einschluss unabhängigen Abschluss. Der Clinician-Workflow wird außerdem auf vorzeitige Diagnose, gemeinsame Drei-Runden-Grenze, blockiertes Überspringen, Antwortausfälle, 150-Fälle-Pool und gesperrte Produktionsvorschau geprüft.
 
 GitHub Actions führt dieselben Tests zusätzlich gegen PostgreSQL in isolierten Testschemata aus und prüft Migrationen und Docker-Build. Lokal kann dafür `TEST_DATABASE_URL` auf eine PostgreSQL-Testdatenbank gesetzt werden; die Tests erstellen und entfernen ausschließlich ihre eigenen zufällig benannten `test_...`-Schemata.
 

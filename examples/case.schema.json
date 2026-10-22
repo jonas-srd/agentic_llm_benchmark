@@ -1,0 +1,68 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+      "title": "Id",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "opening": {
+      "maxLength": 3000,
+      "minLength": 1,
+      "title": "Opening",
+      "type": "string"
+    },
+    "patient_facts": {
+      "maxLength": 12000,
+      "minLength": 1,
+      "title": "Patient Facts",
+      "type": "string"
+    },
+    "labs": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "maxProperties": 50,
+      "title": "Labs",
+      "type": "object"
+    },
+    "reference_diagnosis": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Reference Diagnosis",
+      "type": "string"
+    },
+    "source": {
+      "default": "Synthetic",
+      "enum": [
+        "MedQA",
+        "NEJM",
+        "MediQ",
+        "Synthetic"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "source_id": {
+      "default": "",
+      "maxLength": 300,
+      "title": "Source Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "opening",
+    "patient_facts",
+    "reference_diagnosis"
+  ],
+  "title": "CaseSpec",
+  "type": "object"
+}

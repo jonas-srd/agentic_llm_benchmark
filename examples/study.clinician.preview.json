@@ -1,0 +1,125 @@
+{
+  "id": "clinician-demo-v1",
+  "title": "Clinical Reasoning Study",
+  "version": "1",
+  "consent_version": "1",
+  "consent_text": "This is a development preview with three fictional cases. It is not a live Prolific study. Questions and diagnoses are saved on this server. Questions are sent to the configured LLM provider. Do not enter real patient information. The final study information and consent materials will be supplied before recruitment.",
+  "prolific_study_id": null,
+  "completion_code": null,
+  "max_participants": 100,
+  "max_doctor_turns": 6,
+  "workflow": "clinician",
+  "is_demo": true,
+  "cases_per_participant": 3,
+  "max_question_rounds": 3,
+  "conditions": [
+    "Human_Clinician"
+  ],
+  "models": [
+    "openai/gpt-6.1-sol",
+    "anthropic/claude-sonnet-5.5",
+    "qwen/qwen3.8-2.4t-a95b"
+  ],
+  "steps": [
+    {
+      "id": "screening",
+      "title": "About you",
+      "kind": "questionnaire",
+      "instructions": "Tell us a little about your clinical background.",
+      "questions": [
+        {
+          "id": "physician",
+          "label": "I am a qualified medical doctor.",
+          "kind": "boolean",
+          "required": true,
+          "options": [],
+          "minimum": null,
+          "maximum": null
+        },
+        {
+          "id": "specialty",
+          "label": "Primary specialty",
+          "kind": "choice",
+          "required": true,
+          "options": [
+            "General practice / Family medicine",
+            "Internal medicine",
+            "Emergency medicine",
+            "Surgery",
+            "Pediatrics",
+            "Psychiatry",
+            "Other"
+          ],
+          "minimum": null,
+          "maximum": null
+        },
+        {
+          "id": "years",
+          "label": "Years in clinical practice",
+          "kind": "number",
+          "required": true,
+          "options": [],
+          "minimum": 0.0,
+          "maximum": 70.0
+        }
+      ],
+      "case_id": null
+    },
+    {
+      "id": "final",
+      "title": "Final check",
+      "kind": "final_check",
+      "instructions": "",
+      "questions": [],
+      "case_id": null
+    }
+  ],
+  "cases": [
+    {
+      "id": "demo-fatigue",
+      "title": "Fatigue on exertion",
+      "opening": "A 42-year-old woman presents to primary care with progressive fatigue over three months. She becomes breathless when climbing stairs. She is comfortable at rest and has no chest pain. Blood pressure is 118/74 mmHg, pulse 92/min, temperature 36.7 °C and oxygen saturation 99%.",
+      "patient_facts": "42-year-old woman. Fatigue for three months, gradually worsening. Breathlessness on stairs. Periods are regular but very heavy, lasting 8 days. No black stool or visible GI bleeding. No fever, weight loss, cough or chest pain. Eats little meat. No regular medications. No previous illness. Examination shows conjunctival pallor. All other facts unknown.",
+      "labs": {
+        "Complete blood count": "Hemoglobin 8.8 g/dL; MCV 69 fL; WBC 6.1 × 10^9/L; platelets 410 × 10^9/L.",
+        "Iron studies": "Ferritin 6 ng/mL; transferrin saturation 5%.",
+        "TSH": "2.1 mIU/L.",
+        "Vitamin B12": "410 pg/mL."
+      },
+      "reference_diagnosis": "Iron deficiency anemia associated with heavy menstrual bleeding",
+      "source": "Synthetic",
+      "source_id": ""
+    },
+    {
+      "id": "demo-thirst",
+      "title": "Thirst and weight loss",
+      "opening": "A 23-year-old man reports persistent thirst and unintentional weight loss over four weeks. He has no known medical conditions. Blood pressure is 116/72 mmHg, pulse 88/min, respiratory rate 16/min and temperature 36.8 °C.",
+      "patient_facts": "23-year-old man. Thirst, frequent urination and nocturia for four weeks. Lost 5 kg despite increased appetite. No vomiting, abdominal pain, fever, dysuria or medication use. No family history known. Alert and well oriented. All other facts unknown.",
+      "labs": {
+        "Blood glucose": "Random plasma glucose 326 mg/dL.",
+        "HbA1c": "10.4%.",
+        "Urinalysis": "Glucose 3+; ketones negative; leukocyte esterase negative.",
+        "Metabolic panel": "Sodium 136 mmol/L; potassium 4.1 mmol/L; bicarbonate 24 mmol/L; creatinine 0.9 mg/dL.",
+        "Diabetes autoantibodies": "GAD65 antibodies positive."
+      },
+      "reference_diagnosis": "Type 1 diabetes mellitus without ketoacidosis",
+      "source": "Synthetic",
+      "source_id": ""
+    },
+    {
+      "id": "demo-palpitations",
+      "title": "New palpitations",
+      "opening": "A 35-year-old woman presents with intermittent palpitations and difficulty sleeping for six weeks. Her pulse is regular at 112/min, blood pressure 132/66 mmHg and temperature 37.0 °C.",
+      "patient_facts": "35-year-old woman. Six weeks of palpitations, heat intolerance, sweating and difficulty sleeping. Lost 4 kg despite good appetite. Fine hand tremor and diffuse painless thyroid enlargement on examination. No neck pain, stimulant use, fever or regular medications. All other facts unknown.",
+      "labs": {
+        "Thyroid function": "TSH <0.01 mIU/L; free T4 3.2 ng/dL.",
+        "Thyroid antibodies": "TSH receptor antibodies elevated at 7.8 IU/L.",
+        "ECG": "Sinus tachycardia at 112/min.",
+        "Complete blood count": "Hemoglobin 13.2 g/dL; WBC 6.8 × 10^9/L."
+      },
+      "reference_diagnosis": "Graves disease",
+      "source": "Synthetic",
+      "source_id": ""
+    }
+  ]
+}

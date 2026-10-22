@@ -81,3 +81,38 @@ class AgentMessage(Base):
     latency_ms: Mapped[int] = mapped_column(Integer)
     prompt_version: Mapped[str] = mapped_column(String(40))
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class ClinicalCase(Base):
+    __tablename__ = "clinical_cases"
+    __table_args__ = (UniqueConstraint("session_id", "step_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
+    step_id: Mapped[str] = mapped_column(String(64))
+    case_id: Mapped[str] = mapped_column(String(64))
+    rounds_used: Mapped[int] = mapped_column(Integer, default=0)
+    diagnosis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    diagnosis_request_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    started_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    completed_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class ClinicalTurn(Base):
+    __tablename__ = "clinical_turns"
+    __table_args__ = (UniqueConstraint("case_attempt_id", "request_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_attempt_id: Mapped[str] = mapped_column(ForeignKey("clinical_cases.id"), index=True)
+    request_id: Mapped[str] = mapped_column(String(36))
+    round_number: Mapped[int] = mapped_column(Integer)
+    target: Mapped[str] = mapped_column(String(20))
+    question: Mapped[str] = mapped_column(Text)
+    tests: Mapped[list] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    finished_at: Mapped[float | None] = mapped_column(Float, nullable=True)

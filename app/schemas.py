@@ -35,7 +35,7 @@ class Question(StrictModel):
 class StudyStep(StrictModel):
     id: Identifier
     title: str = Field(min_length=1, max_length=200)
-    kind: Literal["information", "questionnaire", "simulation", "final_check"]
+    kind: Literal["information", "questionnaire", "simulation", "diagnosis", "final_check"]
     instructions: str = Field(default="", max_length=10000)
     questions: list[Question] = Field(default_factory=list, max_length=50)
     case_id: Identifier | None = None
@@ -44,7 +44,7 @@ class StudyStep(StrictModel):
     def unique_questions(self):
         if len({q.id for q in self.questions}) != len(self.questions):
             raise ValueError("Question IDs must be unique")
-        if self.kind == "simulation" and not self.case_id:
+        if self.kind in ("simulation", "diagnosis") and not self.case_id:
             raise ValueError("Simulation needs a case")
         return self
 
@@ -56,6 +56,8 @@ class CaseSpec(StrictModel):
     patient_facts: str = Field(min_length=1, max_length=12000)
     labs: dict[str, str] = Field(default_factory=dict, max_length=50)
     reference_diagnosis: str = Field(min_length=1, max_length=1000)
+    source: Literal["MedQA", "NEJM", "MediQ", "Synthetic"] = "Synthetic"
+    source_id: str = Field(default="", max_length=300)
 
     @model_validator(mode="after")
     def bounded_labs(self):
@@ -74,10 +76,14 @@ class StudyConfig(StrictModel):
     completion_code: str | None = Field(default=None, pattern=r"^[A-Za-z0-9]{4,30}$")
     max_participants: int = Field(default=100, ge=1, le=10000)
     max_doctor_turns: int = Field(default=6, ge=2, le=12)
+    workflow: Literal["agent", "clinician"] = "agent"
+    is_demo: bool = False
+    cases_per_participant: int = Field(default=5, ge=1, le=150)
+    max_question_rounds: Literal[3] = 3
     conditions: list[Identifier] = Field(default=["Agent_Simulation"], min_length=1, max_length=10)
     models: list[str] = Field(default_factory=lambda: list(MODEL_IDS), min_length=1, max_length=3)
-    steps: list[StudyStep] = Field(min_length=1, max_length=40)
-    cases: list[CaseSpec] = Field(min_length=1, max_length=40)
+    steps: list[StudyStep] = Field(min_length=1, max_length=200)
+    cases: list[CaseSpec] = Field(min_length=1, max_length=150)
 
     @model_validator(mode="after")
     def validate_structure(self):
@@ -89,10 +95,50 @@ class StudyConfig(StrictModel):
         if len(set(self.conditions)) != len(self.conditions):
             raise ValueError("Conditions must be unique")
         case_ids = {c.id for c in self.cases}
-        if any(s.kind == "simulation" and s.case_id not in case_ids for s in self.steps):
+        if any(s.kind in ("simulation", "diagnosis") and s.case_id not in case_ids for s in self.steps):
             raise ValueError("Unknown simulation case")
         if self.steps[-1].kind != "final_check" or any(s.kind == "final_check" for s in self.steps[:-1]):
             raise ValueError("Exactly one final_check must finish the study")
+        if self.workflow == "clinician":
+            if any(s.id.startswith("clinical-") for s in self.steps):
+                raise ValueError("Step IDs starting clinical- are reserved")
+            if self.cases_per_participant > len(self.cases):
+                raise ValueError("Cases per participant exceeds the pool")
+            if any(s.kind in ("simulation", "diagnosis") for s in self.steps):
+                raise ValueError("Clinician case steps are assigned automatically at enrolment")
+        return self
+
+
+class ClinicalQuestion(StrictModel):
+    request_id: str = Field(pattern=r"^[0-9a-fA-F-]{36}$")
+    revision: int = Field(ge=0)
+    target: Literal["patient", "lab"]
+    question: str = Field(default="", max_length=2000)
+    tests: list[str] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_target(self):
+        self.question = self.question.strip()
+        if self.target == "patient" and (not self.question or self.tests):
+            raise ValueError("Provide a patient question only")
+        if self.target == "lab" and (not self.tests or self.question):
+            raise ValueError("Select laboratory tests only")
+        if len(self.tests) != len(set(self.tests)):
+            raise ValueError("Tests must be unique")
+        return self
+
+
+class ClinicalDiagnosis(StrictModel):
+    request_id: str = Field(pattern=r"^[0-9a-fA-F-]{36}$")
+    revision: int = Field(ge=0)
+    diagnosis: str = Field(min_length=1, max_length=2000)
+    confidence: int = Field(ge=0, le=100, strict=True)
+
+    @model_validator(mode="after")
+    def strip_diagnosis(self):
+        self.diagnosis = self.diagnosis.strip()
+        if not self.diagnosis:
+            raise ValueError("Diagnosis cannot be blank")
         return self
 
 
