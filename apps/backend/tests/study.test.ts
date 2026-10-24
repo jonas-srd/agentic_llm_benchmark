@@ -574,6 +574,113 @@ for (const mode of modes) {
       1,
     );
   });
+  test(`${mode}: public tests isolate enrollment and force exclusion even with a manipulated final answer`, async (t) => {
+    const f = await fixture(t);
+    const source = {
+      ...demoConfig(),
+      id: "real-pool",
+      is_demo: false,
+      prolific_study_id: "1".repeat(24),
+      completion_code: "COMPLETE",
+    };
+    assert.equal(
+      (
+        await f.req("/v1/admin/studies", source, {
+          "X-Admin-Key": settings.adminKey,
+        })
+      ).status,
+      201,
+    );
+    assert.equal((await f.req("/v1/demo")).status, 404);
+    const app = createApp(
+      f.db,
+      {
+        ...settings,
+        env: "production",
+        publicDemoStudyId: source.id,
+        publicDemoMaxSessions: 1,
+      },
+      () => "10.0.0.1",
+    );
+    let token = "";
+    async function request(path: string, body?: unknown) {
+      return app.request(path, {
+        method: body === undefined ? "GET" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    }
+    const info = (await (await request("/v1/demo")).json()) as any;
+    assert.equal(info.is_demo, true);
+    assert.equal(info.pool_size, source.cases.length);
+    assert.ok(!JSON.stringify(info).includes("reference_diagnosis"));
+    assert.equal((await request("/v1/preview")).status, 404);
+    assert.equal((await request(`/v1/studies/${source.id}`)).status, 401);
+    assert.equal(
+      (
+        await request("/v1/demo/sessions", {
+          consent: false,
+          consent_version: info.consent_version,
+        })
+      ).status,
+      422,
+    );
+    assert.equal(
+      (
+        await request("/v1/demo/sessions", {
+          consent: true,
+          consent_version: "old",
+        })
+      ).status,
+      409,
+    );
+    const enrollment = { consent: true, consent_version: info.consent_version };
+    const attempts = await Promise.all([
+      request("/v1/demo/sessions", enrollment),
+      request("/v1/demo/sessions", enrollment),
+    ]);
+    assert.deepEqual(attempts.map((r) => r.status).sort(), [201, 409]);
+    let session = (await attempts.find((r) => r.status === 201)!.json()) as any;
+    token = session.session_token;
+    assert.equal(session.include_in_analysis, false);
+    assert.equal(session.step.kind, "information");
+    assert.equal(session.total_cases, source.cases_per_participant);
+    const original = (await one(f.db, "SELECT * FROM studies WHERE id=$1", [
+      source.id,
+    ]))!;
+    assert.equal(!!original.active, false);
+    assert.equal(original.enrolled, 0);
+    while (session.status !== "completed") {
+      const diagnosis = session.step.kind === "diagnosis";
+      const result = await request(
+        `/v1/sessions/${session.id}/${diagnosis ? `cases/${session.step.id}/diagnosis` : `steps/${session.step.id}`}`,
+        {
+          request_id: randomUUID(),
+          revision: session.revision,
+          ...(diagnosis
+            ? { diagnosis: "Test diagnosis", confidence: 80 }
+            : {
+                answers: {},
+                include_in_analysis:
+                  session.step.kind === "final_check" ? true : null,
+              }),
+        },
+      );
+      assert.equal(result.status, 200);
+      session = await result.json();
+    }
+    assert.equal(session.include_in_analysis, false);
+    assert.equal(session.completion_url, null);
+    const saved = (await one(f.db, "SELECT * FROM sessions WHERE id=$1", [
+      session.id,
+    ]))!;
+    assert.notEqual(saved.study_id, source.id);
+    assert.equal(!!saved.include_in_analysis, false);
+    assert.equal(saved.snapshot.is_demo, true);
+  });
   test(`${mode}: preview unavailable in production or on remote connections`, async (t) => {
     const f = await fixture(t);
     assert.equal(

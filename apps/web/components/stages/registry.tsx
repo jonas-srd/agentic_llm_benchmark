@@ -50,7 +50,7 @@ function FormStage({ session }: { session: SessionView }) {
         request_id: request.current,
         revision: session.revision,
         answers,
-        include_in_analysis: final ? include : null,
+        include_in_analysis: final ? (session.is_demo ? false : include) : null,
       });
       router.push(stagePath(next));
       router.refresh();
@@ -202,7 +202,13 @@ function FormStage({ session }: { session: SessionView }) {
             )}
           </div>
         ))}
-        {final && (
+        {final && session.is_demo && (
+          <p className="note">
+            This was a test session. Your responses are automatically excluded
+            from the research analysis.
+          </p>
+        )}
+        {final && !session.is_demo && (
           <fieldset className="analysis-options">
             <legend>
               Would you like your responses to be included in the research
@@ -248,11 +254,15 @@ function FormStage({ session }: { session: SessionView }) {
                 ? "Your decision will be saved with your session."
                 : "Please answer all required questions."}
           </span>
-          <button disabled={busy || (final && include === null)}>
+          <button
+            disabled={busy || (final && !session.is_demo && include === null)}
+          >
             {busy
               ? "Saving…"
               : final
-                ? "Complete study"
+                ? session.is_demo
+                  ? "Finish test session"
+                  : "Complete study"
                 : instructions
                   ? "Start first case"
                   : "Continue"}{" "}
@@ -300,13 +310,13 @@ function Completed({ session }: { session: SessionView }) {
       ) : (
         <div className="note">
           {session.is_demo
-            ? "This was a development preview. No Prolific submission has been made."
+            ? "This was a test session. No Prolific submission has been made."
             : "Your session is complete. Please return to your study page."}
         </div>
       )}
       {session.is_demo && (
         <button className="secondary" onClick={restart} disabled={busy}>
-          {busy ? "Starting…" : "Start a new preview"}
+          {busy ? "Starting…" : "Start a new test session"}
         </button>
       )}
       <ErrorNotice message={error} />

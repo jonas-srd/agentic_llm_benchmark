@@ -87,5 +87,10 @@ export async function getSession(): Promise<SessionView | null> {
   }
 }
 export async function getStudy(id?: string): Promise<StudyInfo> {
-  return backend(id ? `/v1/studies/${encodeURIComponent(id)}` : "/v1/preview");
+  return backend(
+    id ? `/v1/studies/${encodeURIComponent(id)}` : directEntryPath(),
+  );
+}
+export function directEntryPath() {
+  return process.env.APP_ENV === "production" ? "/v1/demo" : "/v1/preview";
 }

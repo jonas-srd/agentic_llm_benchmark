@@ -30,7 +30,11 @@ export default async function Home({
         <StageCard
           eyebrow="CLINICAL REASONING STUDY"
           title="Study unavailable"
-          description="Please open the study using your Prolific link, or try again shortly."
+          description={
+            study
+              ? "Please check your Prolific link, or try again shortly."
+              : "Test access is temporarily unavailable. Please try again shortly."
+          }
         >
           <a className="button" href="">
             Try again

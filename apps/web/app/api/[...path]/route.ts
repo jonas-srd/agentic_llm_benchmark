@@ -7,6 +7,7 @@ import {
   getSession,
   COOKIE,
   ApiError,
+  directEntryPath,
 } from "@/lib/backend";
 import type { SessionView } from "@clinical/shared";
 export const runtime = "nodejs";
@@ -75,7 +76,9 @@ async function handle(
         );
       const { study, ...enrollment } = input;
       const result = await backend<SessionView & { session_token: string }>(
-        study ? `/v1/studies/${study}/sessions` : "/v1/preview/sessions",
+        study
+          ? `/v1/studies/${study}/sessions`
+          : `${directEntryPath()}/sessions`,
         { method: "POST", body: enrollment },
       );
       const { session_token, ...safe } = result;
@@ -85,7 +88,7 @@ async function handle(
           JSON.stringify({
             id: safe.id,
             token: session_token,
-            study: study || "preview",
+            study: study || "demo",
             pid: input.PROLIFIC_PID || "",
           }),
         ).toString("base64url"),
@@ -136,8 +139,8 @@ async function handle(
     }
     if (path === "reset" && post) {
       const session = await getSession();
-      if (process.env.APP_ENV === "production" || !session?.is_demo)
-        throw new ApiError(403, "Only preview sessions can be restarted.");
+      if (!session?.is_demo)
+        throw new ApiError(403, "Only test sessions can be restarted.");
       (await cookies()).delete(COOKIE);
       return NextResponse.json({ ok: true });
     }

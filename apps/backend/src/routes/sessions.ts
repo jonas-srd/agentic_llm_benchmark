@@ -131,7 +131,9 @@ export function sessionRoutes(db: Database, settings: Settings) {
         if (step.kind === "final_check") {
           s.status = "completed";
           s.completed_at = now();
-          s.include_in_analysis = body.include_in_analysis;
+          s.include_in_analysis = s.snapshot.is_demo
+            ? false
+            : body.include_in_analysis;
         }
         await tx.query(
           "UPDATE sessions SET step_index=$1,status=$2,completed_at=$3,include_in_analysis=$4 WHERE id=$5",

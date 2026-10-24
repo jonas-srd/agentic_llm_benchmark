@@ -124,7 +124,7 @@ export async function createSession(
     step_index: 0,
     revision: 0,
     status: "active",
-    include_in_analysis: null,
+    include_in_analysis: config.is_demo ? false : null,
     created_at: now(),
     completed_at: null,
   };

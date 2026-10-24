@@ -31,7 +31,7 @@ export function StudyHeader({
           </a>
           <div className="header-center">
             {subtitle}
-            {demo && <span className="preview-label">Preview</span>}
+            {demo && <span className="preview-label">Test session</span>}
           </div>
           <div className="header-right">
             <span>
@@ -69,8 +69,10 @@ export function StudyHeader({
           and your study link to resume. Do not enter real patient information.
         </p>
         <p>
-          If a response fails, that round is returned to you. For other
-          problems, contact the researcher through your Prolific study page.
+          If a response fails, that round is returned to you.{" "}
+          {demo
+            ? "This is a test session. Your responses are excluded from the research analysis."
+            : "For other problems, contact the researcher through your Prolific study page."}
         </p>
         <button onClick={() => help.current?.close()}>Got it</button>
       </dialog>

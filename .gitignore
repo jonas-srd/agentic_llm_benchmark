@@ -9,7 +9,8 @@ __pycache__/
 *.db
 *.db-*
 data/
-.railway/
+.railway/*
+!.railway/railway.ts
 node_modules/
 .next/
 dist/

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { resolve, join, dirname, basename } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 const root = resolve(import.meta.dirname, "../../..");
-let base, scratch, env;
+let base, productionBase, scratch, env;
 const children = [];
 const logs = [];
 async function port() {
@@ -40,12 +40,15 @@ async function ready(url) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(1000) });
       if (res.ok) return;
-      last = `HTTP ${res.status}: ${(await res.text()).slice(0,200)}`;
-    } catch (e) { last = String(e); }
+      last = `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
+    } catch (e) {
+      last = String(e);
+    }
     await delay(200);
   }
   throw new Error(
-    `Test server did not become ready (${url}, ${last}): ` + logs.join("").slice(-2000),
+    `Test server did not become ready (${url}, ${last}): ` +
+      logs.join("").slice(-2000),
   );
 }
 before(async () => {
@@ -62,6 +65,7 @@ before(async () => {
     SESSION_SECRET: randomBytes(32).toString("hex"),
     OPENROUTER_API_KEY: "",
     PREVIEW_STUDY_FILE: "",
+    PUBLIC_DEMO_STUDY_ID: "direct-entry-source",
     HOST: "127.0.0.1",
     HOSTNAME: "127.0.0.1",
     PORT: String(apiPort),
@@ -79,6 +83,21 @@ before(async () => {
   });
   launch("apps/backend/dist/apps/backend/src/index.js");
   await ready(env.BACKEND_URL + "/health/ready");
+  const { demoConfig } =
+    await import("../../backend/dist/apps/backend/src/routes/studies.js");
+  const imported = await fetch(env.BACKEND_URL + "/v1/admin/studies", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Admin-Key": env.ADMIN_API_KEY,
+    },
+    body: JSON.stringify({
+      ...demoConfig(),
+      id: env.PUBLIC_DEMO_STUDY_ID,
+      is_demo: false,
+    }),
+  });
+  assert.equal(imported.status, 201);
   await cp(
     join(root, "apps/web/.next/static"),
     join(root, "apps/web/.next/standalone/apps/web/.next/static"),
@@ -88,6 +107,83 @@ before(async () => {
     PORT: String(webPort),
   });
   await ready(base + "/api/health");
+  const productionPort = await port();
+  productionBase = `http://127.0.0.1:${productionPort}`;
+  launch("apps/web/.next/standalone/apps/web/server.js", {
+    APP_ENV: "production",
+    PORT: String(productionPort),
+    PUBLIC_FRONTEND_URL: productionBase,
+  });
+  await ready(productionBase + "/api/health");
+});
+
+test("production direct entry needs no Prolific IDs, preserves secure cookies and excludes test responses", async () => {
+  let cookie = "";
+  async function request(path, body) {
+    return fetch(productionBase + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: productionBase,
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  }
+  const home = await request("/");
+  assert.equal(home.status, 200);
+  assert.match(await home.text(), /Start test session/);
+  const start = await request("/api/start", {
+    consent: true,
+    consent_version: "public-demo-1",
+  });
+  assert.equal(start.status, 201);
+  const setCookie = start.headers.get("set-cookie");
+  assert.match(setCookie, /; Secure/i);
+  assert.match(setCookie, /HttpOnly/i);
+  cookie = setCookie.split(";")[0];
+  let session = await start.json();
+  assert.equal(session.is_demo, true);
+  assert.equal(session.include_in_analysis, false);
+  assert.ok(!("session_token" in session));
+  assert.equal(session.step.id, "instructions");
+  assert.equal(
+    (
+      await request("/api/start", {
+        consent: true,
+        consent_version: "public-demo-1",
+      })
+    ).status,
+    409,
+  );
+  while (session.status !== "completed") {
+    const diagnosis = session.step.kind === "diagnosis";
+    const response = await request(
+      `/api/${diagnosis ? `cases/${session.step.id}/diagnosis` : `steps/${session.step.id}`}`,
+      {
+        request_id: randomUUID(),
+        revision: session.revision,
+        ...(diagnosis
+          ? { diagnosis: "Test diagnosis", confidence: 70 }
+          : {
+              answers: {},
+              include_in_analysis:
+                session.step.kind === "final_check" ? true : null,
+            }),
+      },
+    );
+    assert.equal(response.status, 200);
+    session = await response.json();
+  }
+  assert.equal(session.include_in_analysis, false);
+  assert.equal(session.completion_url, null);
+  assert.match(
+    await (await request("/study/outro")).text(),
+    /Start a new test session/,
+  );
+  const reset = await request("/api/reset", {});
+  assert.equal(reset.status, 200);
+  assert.match(reset.headers.get("set-cookie"), /clinical_session=;/);
 });
 after(async () => {
   for (const p of children)

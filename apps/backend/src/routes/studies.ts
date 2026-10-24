@@ -1,9 +1,16 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { StudySchema, EnrollSchema, MODEL_IDS } from "@clinical/shared";
 import { createSession, studyInfo } from "../domain/study.js";
-import { insert, one, isUnique, now, type Database } from "../lib/db.js";
+import {
+  insert,
+  one,
+  isUnique,
+  now,
+  type Database,
+  type Queryable,
+} from "../lib/db.js";
 import { requireAdmin } from "../lib/security.js";
 import type { Settings } from "../lib/config.js";
 import rawDemo from "../domain/demo.json" with { type: "json" };
@@ -33,6 +40,74 @@ export function studyRoutes(
   peer: (c: any) => string | undefined,
 ) {
   const app = new Hono();
+  async function publicDemoConfig(query: Queryable) {
+    if (!settings.publicDemoStudyId)
+      throw new HTTPException(404, { message: "Test access is not available" });
+    const source = await one(query, "SELECT config FROM studies WHERE id=$1", [
+      settings.publicDemoStudyId,
+    ]);
+    if (!source || source.config.workflow !== "clinician")
+      throw new HTTPException(503, {
+        message: "Test cases are temporarily unavailable",
+      });
+    const original = StudySchema.parse(source.config);
+    return StudySchema.parse({
+      ...original,
+      id: `demo-${createHash("sha256").update(original.id).digest("hex").slice(0, 32)}`,
+      is_demo: true,
+      prolific_study_id: null,
+      completion_code: null,
+      max_participants: settings.publicDemoMaxSessions,
+      consent_version: "public-demo-1",
+      consent_text:
+        "This is a test session. No Prolific account or invitation is needed. Your answers and interaction timing are saved for testing and excluded from the research analysis. There is no Prolific submission or payment. Do not enter real patient information.",
+      // Testers can explore the cases without claiming to be a qualified physician.
+      steps: [
+        ...original.steps.filter((step) => step.kind === "information"),
+        { id: "final", title: "Finish test session", kind: "final_check" },
+      ],
+    });
+  }
+  app.get("/demo", async (c) => c.json(studyInfo(await publicDemoConfig(db))));
+  app.post("/demo/sessions", async (c) => {
+    const body = EnrollSchema.pick({
+      consent: true,
+      consent_version: true,
+    }).parse(await c.req.json());
+    return c.json(
+      await db.tx(async (tx) => {
+        const config = await publicDemoConfig(tx);
+        if (body.consent_version !== config.consent_version)
+          throw new HTTPException(409, {
+            message: "Consent changed; reload the page",
+          });
+        await tx.query(
+          "INSERT INTO studies(id,config,active,enrolled,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING",
+          [config.id, config, false, 0, now()],
+        );
+        const reserved = await tx.query(
+          "UPDATE studies SET enrolled=enrolled+1 WHERE id=$1 AND enrolled<$2",
+          [config.id, settings.publicDemoMaxSessions],
+        );
+        if (reserved.rowCount !== 1)
+          throw new HTTPException(409, {
+            message:
+              "Test session capacity reached. Please contact the study team.",
+          });
+        return createSession(
+          tx,
+          config,
+          {
+            PROLIFIC_PID: randomBytes(12).toString("hex"),
+            STUDY_ID: "0".repeat(24),
+            SESSION_ID: randomBytes(12).toString("hex"),
+          },
+          settings,
+        );
+      }),
+      201,
+    );
+  });
   async function previewConfig() {
     if (!settings.previewStudyFile) return demoConfig();
     const raw = JSON.parse(await readFile(settings.previewStudyFile, "utf8"));

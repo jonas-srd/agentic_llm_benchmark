@@ -124,17 +124,23 @@ Die drei Prolific-IDs werden gespeichert; `STUDY_ID` muss zur Konfiguration pass
 
 ## Railway
 
-Vier Dienste in einem Projekt: **web + api + worker + PostgreSQL**. Repository-Root für alle Builds beibehalten.
+Vier Dienste in einem Projekt: **web + api + worker + PostgreSQL**. Repository-Root für alle Builds beibehalten. Die Konfiguration liegt in `.railway/railway.ts`; die veralteten `railway*.json`-Dateien wurden entfernt. Railway nimmt neue Dienste nicht mehr in Config as Code auf ([Migration](https://docs.railway.com/infrastructure-as-code)).
 
 | Dienst | Konfigurationsdatei | Variablen |
 | --- | --- | --- |
-| web | `/railway.web.json` | `APP_ENV=production`, `BACKEND_URL=http://<api-private-domain>:8000`, `PUBLIC_FRONTEND_URL=https://<web-domain>`, `PORT=3000` |
-| api | `/railway.json` | `APP_ENV=production`, `PORT=8000`, `HOST=::`, `DATABASE_URL`, `ADMIN_API_KEY`, `SESSION_SECRET`, `OPENROUTER_API_KEY`, `FRONTEND_URL=https://<web-domain>` |
-| worker | `/railway.worker.json` | dieselben Datenbank- und Secret-Werte wie API; kein öffentlicher Port |
+| web | `.railway/railway.ts`, Dienst `web` | `APP_ENV=production`, `BACKEND_URL=http://<api-private-domain>:8000`, `PUBLIC_FRONTEND_URL=https://<web-domain>`, `PORT=3000` |
+| api | `.railway/railway.ts`, Dienst `api` | `APP_ENV=production`, `PORT=8000`, `HOST=::`, `DATABASE_URL`, `ADMIN_API_KEY`, `SESSION_SECRET`, `OPENROUTER_API_KEY`, `FRONTEND_URL=https://<web-domain>` |
+| worker | `.railway/railway.ts`, Dienst `worker` | dieselben Datenbank- und Secret-Werte wie API; kein öffentlicher Port |
 
-`DATABASE_URL` auf die private PostgreSQL-Variable referenzieren. Nur das Web braucht eine öffentliche Domain; administrative API-Aufrufe können über einen gesicherten lokalen Tunnel oder die Railway-Shell erfolgen. Keine Secrets in Buildargumente oder Frontend-Variablen setzen. Die API führt vor dem Start die additive Node-Migration aus; der Worker wartet bei fehlender Migration. Dienste in derselben Region starten und Datenbank-Backups aktivieren. `HOST=::` unterstützt auch IPv6 im [privaten Railway-Netz](https://docs.railway.com/networking/private-networking); die drei Dateien verwenden [Railway Config as Code](https://docs.railway.com/config-as-code/reference).
+`DATABASE_URL` auf die private PostgreSQL-Variable referenzieren. Nur das Web braucht eine öffentliche Domain; administrative API-Aufrufe können über einen gesicherten lokalen Tunnel oder die Railway-Shell erfolgen. Keine Secrets in Buildargumente oder Frontend-Variablen setzen. Die API führt vor dem Start die additive Node-Migration aus; der Worker wartet bei fehlender Migration. Dienste in derselben Region starten und Datenbank-Backups aktivieren. `HOST=::` unterstützt auch IPv6 im [privaten Railway-Netz](https://docs.railway.com/networking/private-networking).
 
-**Stand 22.10.2026:** Kein bestätigtes Railway-Deployment. Die bestehende App-Verbindung verlangt erneute Authentifizierung. Die Dateien sind vorbereitet, aber nicht als erfolgreich ausgerollt zu verstehen.
+**Stand 23.10.2026:** Das private [Railway-Projekt clinical-reasoning-study](https://railway.com/project/1f9973c7-d6af-4a11-9293-208d0830e266?environmentId=a9f669fa-ba93-47f4-b0ea-6adc80a8fbb7) betreibt alle vier Dienste in `production`, Region `sfo`. Die [Webseite](https://web-production-9fa3b.up.railway.app) ist öffentlich; API, Worker und PostgreSQL besitzen keine öffentlichen Endpunkte. Der echte Pool `clinical-150-ae4e477e` mit 150 Fällen und 50 Originalbildern ist importiert und **inaktiv**, mit null eingeschriebenen Teilnehmenden. Über „Start test session“ lässt sich derselbe Ablauf ohne Prolific ausprobieren: fünf zufällige Fälle, maximal drei Fragerunden, getrennte Testsitzungen und erzwungener Ausschluss von der Studienauswertung. `PUBLIC_DEMO_STUDY_ID` wählt den Pool; `PUBLIC_DEMO_MAX_SESSIONS=100` begrenzt die Anzahl der Testsitzungen. Die lokale Vorschau bleibt lokal.
+
+Der echte Ablauf wurde über das veröffentlichte Next.js-Frontend und den Railway-Worker mit allen drei OpenRouter-Modellen geprüft: je drei Fragen, gesperrte vierte Frage, ursprüngliches NEJM-Bild inklusive SHA-256-Prüfung, frühe Diagnose bei null Fragen und Abschluss ohne Analyse-Einschluss. Dafür existieren separate inaktive QA-Studien; der eigentliche Studienpool wurde nicht aktiviert. Die Nachweise liegen lokal unter `data/railway-smoke-results.json` und `data/railway-deployment-audit.json`. Details zum Betrieb stehen unter [Deployment](docs/deployment.md).
+
+Für Änderungen zuerst `railway config plan` prüfen und dann `railway config apply --yes` anwenden. Danach betroffene Dienste mit `railway up --service <name>` aus dem Repository-Root hochladen. Keine GitHub-Quellverknüpfung: Ein Git-Push allein löst derzeit kein Deployment aus. `preserve()` erhält die in Railway hinterlegten API-Secrets; Worker-Variablen referenzieren diese. Die native `railway.exe` muss unter Windows im `PATH` liegen, damit die Versionsprüfung des IaC-SDK funktioniert.
+
+Automatische Volume-Backups sind **nicht aktiviert**: Railway hat die Einrichtung täglicher/wöchentlicher Backups mit dem Hinweis abgelehnt, dass dafür ein Pro-Workspace benötigt wird. Es wurde kein Tarifwechsel vorgenommen.
 
 ## Prüfen
 
@@ -147,4 +153,4 @@ npm run test:web
 
 Tests verwenden simulierte Providerantworten ohne LLM-Kosten. Mit `TEST_DATABASE_URL` läuft dieselbe Backend-Suite zusätzlich gegen PostgreSQL in eigenen temporären Testschemata. GitHub Actions enthält diese Prüfung und beide Docker-Builds. Lokal wurden SQLite-Tests und der Next.js-/Hono-Build ausgeführt; Docker/PostgreSQL stehen auf diesem Rechner derzeit nicht zur Verfügung.
 
-Vor einer echten Rekrutierung fehlen noch die fachliche Freigabe der importierten Fallaufteilung, finale Studien-/Einwilligungstexte, reale Prolific-Konfiguration und das Live-Deployment. Mehrtägige Follow-ups, blockweise Balancierung, automatische Diagnosebewertung, Admin-Weboberfläche, Cookie-Wiederherstellung und Datenlöschungsabläufe sind nicht Bestandteil dieses Umbaus.
+Vor einer echten Rekrutierung fehlen noch die fachliche Freigabe der importierten Fallaufteilung, finale Studien-/Einwilligungstexte, reale Prolific-Konfiguration und eine Backup-Lösung. Mehrtägige Follow-ups, blockweise Balancierung, automatische Diagnosebewertung, Admin-Weboberfläche, Cookie-Wiederherstellung und Datenlöschungsabläufe sind nicht Bestandteil dieses Umbaus.

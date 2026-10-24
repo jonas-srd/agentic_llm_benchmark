@@ -12,6 +12,8 @@ export interface Settings {
   maxTokens: number;
   pollMs: number;
   previewStudyFile: string;
+  publicDemoStudyId: string;
+  publicDemoMaxSessions: number;
 }
 export function settingsFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -29,6 +31,8 @@ export function settingsFromEnv(
     maxTokens: Number(env.LLM_MAX_TOKENS || 1800),
     pollMs: Number(env.WORKER_POLL_SECONDS || 2) * 1000,
     previewStudyFile: env.PREVIEW_STUDY_FILE || "",
+    publicDemoStudyId: env.PUBLIC_DEMO_STUDY_ID || "",
+    publicDemoMaxSessions: Number(env.PUBLIC_DEMO_MAX_SESSIONS || 100),
   };
   if (settings.adminKey.length < 32 || settings.sessionSecret.length < 32)
     throw new Error(
@@ -41,5 +45,11 @@ export function settingsFromEnv(
     throw new Error("Production requires PostgreSQL");
   if (settings.llmTimeout < 10000 || settings.llmTimeout > 120000)
     throw new Error("LLM timeout must be between 10 and 120 seconds");
+  if (
+    !Number.isInteger(settings.publicDemoMaxSessions) ||
+    settings.publicDemoMaxSessions < 1 ||
+    settings.publicDemoMaxSessions > 10000
+  )
+    throw new Error("PUBLIC_DEMO_MAX_SESSIONS must be between 1 and 10000");
   return settings;
 }

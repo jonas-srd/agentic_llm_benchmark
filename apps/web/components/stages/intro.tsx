@@ -51,7 +51,7 @@ export function IntroStage({
       />
       <main className="page-shell">
         <StageCard
-          eyebrow="WELCOME TO THE STUDY"
+          eyebrow={info.is_demo ? "TRY THE STUDY" : "WELCOME TO THE STUDY"}
           title="How do you reach a diagnosis?"
           description="Explore clinical cases, gather the evidence you need, and share your diagnostic decisions."
         >
@@ -84,7 +84,7 @@ export function IntroStage({
           </div>
           {info.is_demo && (
             <div className="note">
-              <strong>Development preview</strong>
+              <strong>Test access — no Prolific link needed</strong>
               <p>
                 {info.sources.includes("Synthetic")
                   ? "This preview uses fictional practice cases."
@@ -93,7 +93,8 @@ export function IntroStage({
                     )
                       .map(([name, count]) => `${count} ${name}`)
                       .join(", ")}.`}{" "}
-                This preview is not a live Prolific study.
+                Test responses are saved separately and excluded from the
+                research analysis.
               </p>
             </div>
           )}
@@ -138,7 +139,11 @@ export function IntroStage({
                   You can review the instructions before your first case.
                 </span>
                 <button disabled={!consent || busy}>
-                  {busy ? "Starting…" : "Begin study"}{" "}
+                  {busy
+                    ? "Starting…"
+                    : info.is_demo
+                      ? "Start test session"
+                      : "Begin study"}{" "}
                   <span aria-hidden="true">→</span>
                 </button>
               </div>
