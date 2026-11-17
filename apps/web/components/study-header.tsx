@@ -1,17 +1,33 @@
 "use client";
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { api, errorMessage } from "@/lib/client";
+import { StudyInstructions } from "./study-instructions";
 export function StudyHeader({
   step,
   total,
   subtitle,
   demo = false,
+  preview = false,
 }: {
   step: number;
   total: number;
   subtitle: string;
   demo?: boolean;
+  preview?: boolean;
 }) {
   const help = useRef<HTMLDialogElement>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function restart() {
+    setBusy(true);
+    try {
+      await api("reset", {});
+      window.location.assign("/");
+    } catch (e) {
+      setError(errorMessage(e));
+      setBusy(false);
+    }
+  }
   return (
     <>
       <header className="study-header">
@@ -31,51 +47,64 @@ export function StudyHeader({
           </a>
           <div className="header-center">
             {subtitle}
-            {demo && <span className="preview-label">Test session</span>}
+            {(demo || preview) && (
+              <span className="preview-label">
+                {preview ? "Preview" : "Test session"}
+              </span>
+            )}
           </div>
           <div className="header-right">
-            <span>
-              Step <strong>{step}</strong> of {total}
-            </span>
-            <button
-              className="help-button"
-              onClick={() => help.current?.showModal()}
-              aria-label="Study help"
-            >
-              ?
-            </button>
+            {preview ? (
+              <a href="/">Back to study</a>
+            ) : (
+              <>
+                <span>
+                  Step <strong>{step}</strong> of {total}
+                </span>
+                <button
+                  className="help-button"
+                  onClick={() => help.current?.showModal()}
+                  aria-label="Study help"
+                >
+                  ?
+                </button>
+              </>
+            )}
           </div>
         </div>
-        <div
-          className="progress-track"
-          role="progressbar"
-          aria-label="Study progress"
-          aria-valuemin={0}
-          aria-valuemax={total}
-          aria-valuenow={step}
-        >
-          <span style={{ width: `${Math.min(step / total, 1) * 100}%` }} />
-        </div>
+        {!preview && (
+          <div
+            className="progress-track"
+            role="progressbar"
+            aria-label="Study progress"
+            aria-valuemin={0}
+            aria-valuemax={total}
+            aria-valuenow={step}
+          >
+            <span style={{ width: `${Math.min(step / total, 1) * 100}%` }} />
+          </div>
+        )}
       </header>
-      <dialog ref={help} className="dialog">
-        <h2>Taking part in the study</h2>
-        <p>
-          For each case, you can use up to three rounds in total to ask the
-          patient a question or request tests. You can submit your diagnosis
-          earlier if you are ready.
-        </p>
-        <p>
-          Your submitted answers and case drafts are saved. Keep this browser
-          and your study link to resume. Do not enter real patient information.
-        </p>
-        <p>
-          If a response fails, that round is returned to you.{" "}
-          {demo
-            ? "This is a test session. Your responses are excluded from the research analysis."
-            : "For other problems, contact the researcher through your Prolific study page."}
-        </p>
-        <button onClick={() => help.current?.close()}>Got it</button>
-      </dialog>
+      {!preview && (
+        <dialog ref={help} className="dialog">
+          <h2>How the study works</h2>
+          <StudyInstructions />
+          <p>Your progress is saved. Use this browser to resume.</p>
+          <p>
+            If a response fails, you can retry the question.{" "}
+            {demo
+              ? "Test responses are excluded from the research analysis."
+              : "For help, contact the researcher through Prolific."}
+          </p>
+          <button onClick={() => help.current?.close()}>Got it</button>
+          {demo && step > 1 && (
+            <button className="secondary" onClick={restart} disabled={busy}>
+              Start a new test session
+            </button>
+          )}
+          {error && <p role="alert">{error}</p>}
+        </dialog>
+      )}
     </>
   );
 }

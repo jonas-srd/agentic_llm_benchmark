@@ -3,7 +3,12 @@ import { setTimeout } from "node:timers/promises";
 import { settingsFromEnv } from "./lib/config.js";
 import { Database } from "./lib/db.js";
 import { OpenRouter } from "./lib/openrouter.js";
-import { claimJob, processRun, processTurn } from "./domain/jobs.js";
+import {
+  claimJob,
+  processRun,
+  processTurn,
+  processJudgment,
+} from "./domain/jobs.js";
 const settings = settingsFromEnv(),
   db = new Database(settings.databaseUrl),
   provider = new OpenRouter(settings),
@@ -26,6 +31,11 @@ while (!stopping) {
     const run = await claimJob(db, worker, "runs");
     if (run) {
       await processRun(db, provider, run, worker);
+      continue;
+    }
+    const judgment = await claimJob(db, worker, "diagnosis_judgments");
+    if (judgment) {
+      await processJudgment(db, provider, judgment, worker);
       continue;
     }
     await setTimeout(settings.pollMs);

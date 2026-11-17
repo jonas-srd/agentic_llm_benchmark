@@ -1,10 +1,11 @@
-import type { StudyStep, Draft } from "./schemas.js";
+import type { StudyStep, Draft, RankedDiagnosis } from "./schemas.js";
 export interface SessionView {
   id: string;
   status: string;
   step_index: number;
   total_steps: number;
   revision: number;
+  post_survey_version?: string;
   step: Omit<StudyStep, "case_id"> | null;
   workflow: string;
   is_demo: boolean;
@@ -30,11 +31,12 @@ export interface StudyInfo {
 export interface TurnView {
   id: string;
   round_number: number;
-  target: "patient" | "lab";
+  target: "auto" | "patient" | "lab" | "both";
   question: string;
   tests: string[];
   status: string;
   response: string | null;
+  responses: Array<{ target: "patient" | "lab"; response: string }>;
   images: Array<{ url: string; caption: string }>;
   created_at: number;
   finished_at: number | null;
@@ -48,10 +50,17 @@ export interface CaseView {
   rounds_used: number;
   max_rounds: number;
   can_ask: boolean;
+  rounds_completed: number;
+  can_diagnose: boolean;
+  retry_after_seconds: number;
   pending: boolean;
   turns: TurnView[];
   diagnosis: string | null;
   confidence: number | null;
+  diagnoses:
+    (RankedDiagnosis | { diagnosis: string; probability: number })[] | null;
+  confidence_scale: "likert_1_7" | "percent_0_100";
+  protocol_version: string;
   completed_at: number | null;
   draft: Draft;
 }

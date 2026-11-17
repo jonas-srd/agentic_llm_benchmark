@@ -7,7 +7,12 @@ import { StageCard, ErrorNotice } from "../ui/stage-card";
 type Run = {
   id: string;
   status: string;
-  result?: { diagnosis: string; confidence: number };
+  result?: {
+    confidence_scale?: string;
+    diagnoses?: { diagnosis: string; confidence: number }[];
+    diagnosis?: string;
+    confidence?: number;
+  };
   messages?: { sequence: number; role: string; content: string }[];
 };
 export function SimulationStage({ session }: { session: SessionView }) {
@@ -59,8 +64,8 @@ export function SimulationStage({ session }: { session: SessionView }) {
       description={session.step!.instructions}
     >
       <p>
-        The doctor agent investigates the case through the patient and
-        laboratory agents using the session’s assigned model.
+        The doctor agent asks the patient three questions and then gives one
+        diagnosis with a confidence rating from 1 to 7.
       </p>
       <ErrorNotice message={error} />
       {!run ? (
@@ -71,15 +76,33 @@ export function SimulationStage({ session }: { session: SessionView }) {
         <>
           <p role="status">
             {["queued", "running"].includes(run.status)
-              ? "The agents are investigating this case…"
+              ? "The agents are investigating this patient case…"
               : run.status === "succeeded"
                 ? "Simulation complete."
                 : "The simulation was interrupted or failed. Please contact the researcher."}
           </p>
           {run.result && (
             <div className="note">
-              <strong>{run.result.diagnosis}</strong>
-              <p>Confidence: {Math.round(run.result.confidence * 100)}%</p>
+              {run.result.diagnoses ? (
+                <ol>
+                  {run.result.diagnoses.map((item, index) => (
+                    <li key={index}>
+                      <strong>{item.diagnosis}</strong> — {item.confidence}
+                      {run.result?.confidence_scale === "likert_1_7"
+                        ? " / 7"
+                        : "%"}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <>
+                  <strong>{run.result.diagnosis}</strong>
+                  <p>
+                    Confidence: {Math.round((run.result.confidence || 0) * 100)}
+                    %
+                  </p>
+                </>
+              )}
             </div>
           )}
           {run.status === "succeeded" && (

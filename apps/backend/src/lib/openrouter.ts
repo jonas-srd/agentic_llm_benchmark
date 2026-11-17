@@ -3,6 +3,7 @@ import type { Settings } from "./config.js";
 export type Message = {
   role: "system" | "user" | "assistant";
   content: string;
+  images?: { caption: string; url: string }[];
 };
 export interface Reply {
   content: string;
@@ -21,13 +22,15 @@ export class OpenRouter implements Provider {
   constructor(
     private settings: Settings,
     private transport: typeof fetch = fetch,
+    private allowedModels: readonly string[] = MODEL_IDS,
+    private sampling: { reasoning?: { effort: "max" }; temperature?: number } = {},
   ) {}
   async complete(
     model: string,
     messages: Message[],
     json = false,
   ): Promise<Reply> {
-    if (!(MODEL_IDS as readonly string[]).includes(model))
+    if (!this.allowedModels.includes(model))
       throw new ProviderError("model_not_allowed");
     if (!this.settings.openrouterKey)
       throw new ProviderError("openrouter_not_configured");
@@ -46,8 +49,20 @@ export class OpenRouter implements Provider {
           },
           body: JSON.stringify({
             model,
-            messages,
+            messages: messages.map(({ role, content, images }) => ({
+              role,
+              content: images?.length
+                ? [
+                    { type: "text", text: content },
+                    ...images.flatMap(({ caption, url }) => [
+                      { type: "text", text: caption },
+                      { type: "image_url", image_url: { url } },
+                    ]),
+                  ]
+                : content,
+            })),
             max_tokens: this.settings.maxTokens,
+            ...this.sampling,
             provider: { allow_fallbacks: false, require_parameters: true },
             ...(json ? { response_format: { type: "json_object" } } : {}),
           }),

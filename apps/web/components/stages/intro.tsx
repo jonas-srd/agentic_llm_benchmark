@@ -1,10 +1,19 @@
 "use client";
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { stagePath, type SessionView, type StudyInfo } from "@clinical/shared";
+import {
+  stagePath,
+  PARTICIPANT_INFORMATION,
+  NO_TIME_LIMIT,
+  ELIGIBILITY_CONFIRMATION,
+  RESEARCH_CONSENT,
+  type SessionView,
+  type StudyInfo,
+} from "@clinical/shared";
 import { api, errorMessage } from "@/lib/client";
 import { StudyHeader } from "../study-header";
 import { StageCard, ErrorNotice } from "../ui/stage-card";
+import { useStudyTiming } from "@/hooks/use-study-timing";
 export function IntroStage({
   info,
   existing,
@@ -17,9 +26,11 @@ export function IntroStage({
   study?: string;
 }) {
   const [consent, setConsent] = useState(false),
+    [eligible, setEligible] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const router = useRouter();
+  const timing = useStudyTiming("intro", "page", 0, false);
   const total =
     info.steps.length +
     (info.workflow === "clinician" ? info.cases_per_participant : 0) +
@@ -32,7 +43,11 @@ export function IntroStage({
       const session = await api<SessionView>("start", {
         ...(study ? { study, ...ids } : {}),
         consent,
+        ...(info.workflow === "clinician"
+          ? { eligibility_confirmed: eligible }
+          : {}),
         consent_version: info.consent_version,
+        intro_timing: timing.read(),
       });
       router.push(stagePath(session));
       router.refresh();
@@ -51,60 +66,31 @@ export function IntroStage({
       />
       <main className="page-shell">
         <StageCard
-          eyebrow={info.is_demo ? "TRY THE STUDY" : "WELCOME TO THE STUDY"}
-          title="How do you reach a diagnosis?"
-          description="Explore clinical cases, gather the evidence you need, and share your diagnostic decisions."
+          eyebrow={info.is_demo ? "TEST SESSION" : "WELCOME"}
+          title="Clinical diagnosis study"
         >
-          <div className="intro-facts">
-            <div>
-              <strong>{info.cases_per_participant}</strong>
-              <span>cases assigned to you</span>
-            </div>
-            <div>
-              <strong>Up to 3</strong>
-              <span>question rounds per case</span>
-            </div>
-            <div>
-              <strong>Your call</strong>
-              <span>diagnose when you are ready</span>
-            </div>
-          </div>
-          <div className="prose">
-            <h2>Your role</h2>
-            <p>
-              You will take the role of the treating physician. Read a case, ask
-              the simulated patient for more information or request available
-              tests, then submit your most likely diagnosis and confidence.
-            </p>
-            <p>
-              Each question to the patient or request for a group of tests uses
-              one round. You have three rounds in total per case. You may submit
-              a diagnosis at any point before that limit.
-            </p>
-          </div>
           {info.is_demo && (
-            <div className="note">
-              <strong>Test access — no Prolific link needed</strong>
-              <p>
-                {info.sources.includes("Synthetic")
-                  ? "This preview uses fictional practice cases."
-                  : `Your ${info.cases_per_participant} cases are drawn from a fixed pool of ${info.pool_size}: ${Object.entries(
-                      info.source_counts,
-                    )
-                      .map(([name, count]) => `${count} ${name}`)
-                      .join(", ")}.`}{" "}
-                Test responses are saved separately and excluded from the
-                research analysis.
-              </p>
-            </div>
+            <p className="note">
+              This is a practice session. To receive a completion code, open
+              your personal study link from Prolific before you begin.
+            </p>
           )}
+          <div className="prose">
+            <h2>How it works</h2>
+            <p>
+              You will review patient cases and enter one diagnosis per patient
+              case. Before giving your diagnosis, you will interact with each
+              patient and ask three questions, one at a time. A short
+              questionnaire follows the patient cases.
+            </p>
+            <p>{NO_TIME_LIMIT}</p>
+          </div>
           <div className="consent-copy">
             <h2>Information and consent</h2>
-            <p>{info.consent_text}</p>
             <p>
-              Case drafts, submitted answers, question rounds and study timing
-              events are recorded. The patient and lab are simulated by an AI
-              model. Please do not include real patient information.
+              {info.workflow === "clinician"
+                ? PARTICIPANT_INFORMATION
+                : info.consent_text}
             </p>
           </div>
           <ErrorNotice message={error} />
@@ -123,6 +109,17 @@ export function IntroStage({
             </div>
           ) : (
             <form onSubmit={start}>
+              {info.workflow === "clinician" && (
+                <label className="check-line">
+                  <input
+                    type="checkbox"
+                    required
+                    checked={eligible}
+                    onChange={(e) => setEligible(e.target.checked)}
+                  />
+                  <span>{ELIGIBILITY_CONFIRMATION}</span>
+                </label>
+              )}
               <label className="check-line">
                 <input
                   type="checkbox"
@@ -131,14 +128,22 @@ export function IntroStage({
                   onChange={(e) => setConsent(e.target.checked)}
                 />
                 <span>
-                  I have read the information above and consent to participate.
+                  {info.workflow === "clinician"
+                    ? RESEARCH_CONSENT
+                    : "I have read the information above and consent to participate."}
                 </span>
               </label>
               <div className="action-row">
                 <span className="muted">
-                  You can review the instructions before your first case.
+                  Instructions follow before your first patient case.
                 </span>
-                <button disabled={!consent || busy}>
+                <button
+                  disabled={
+                    !consent ||
+                    (info.workflow === "clinician" && !eligible) ||
+                    busy
+                  }
+                >
                   {busy
                     ? "Starting…"
                     : info.is_demo
@@ -150,15 +155,7 @@ export function IntroStage({
             </form>
           )}
         </StageCard>
-        <StudyFooter />
       </main>
     </>
-  );
-}
-export function StudyFooter() {
-  return (
-    <footer className="study-footer">
-      Clinical reasoning study <span>•</span> For research purposes
-    </footer>
   );
 }

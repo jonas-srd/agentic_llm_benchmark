@@ -1,11 +1,29 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { stagePath, type CaseView, type SessionView } from "@clinical/shared";
+import {
+  stagePath,
+  RankedDiagnosesSchema,
+  diagnosisSubmission,
+  DEFAULT_CONFIDENCE,
+  type CaseView,
+  type SessionView,
+} from "@clinical/shared";
 import { api, errorMessage } from "@/lib/client";
 import { useDraftAutosave } from "@/hooks/use-draft-autosave";
 import { useStudyEvents } from "@/hooks/use-study-events";
 import { ErrorNotice } from "../ui/stage-card";
+import { useStudyTiming } from "@/hooks/use-study-timing";
+import { ResponseProgress } from "../response-progress";
+import { ConfidenceSlider } from "../confidence-slider";
+function speaker(target: "auto" | "patient" | "lab" | "both") {
+  return {
+    auto: "Response",
+    patient: "Patient",
+    lab: "Lab",
+    both: "Patient & lab",
+  }[target];
+}
 function CaseImage({ image }: { image: { url: string; caption: string } }) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -29,7 +47,7 @@ function CaseImage({ image }: { image: { url: string; caption: string } }) {
           href={image.url}
           target="_blank"
           rel="noreferrer"
-          aria-label="Open original case image at full size"
+          aria-label="Open original patient case image at full size"
         >
           {/* Authenticated case evidence must bypass the public Next image cache. */}
           <img
@@ -65,9 +83,11 @@ export function CaseStage({ session }: { session: SessionView }) {
     <div className="stage-card">
       <ErrorNotice message={error} />
       {error ? (
-        <button onClick={() => window.location.reload()}>Reload case</button>
+        <button onClick={() => window.location.reload()}>
+          Reload patient case
+        </button>
       ) : (
-        <p role="status">Loading your case…</p>
+        <p role="status">Loading your patient case…</p>
       )}
     </div>
   );
@@ -81,16 +101,33 @@ function CaseWorkspace({
 }) {
   const [data, setData] = useState(initial),
     [revision, setRevision] = useState(session.revision),
-    [target, setTarget] = useState<"patient" | "lab">("patient"),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
-  const draft = useDraftAutosave(initial.step_id, initial.draft);
+  const draft = useDraftAutosave(initial.step_id, {
+    ...initial.draft,
+    question: [initial.draft.question, initial.draft.lab_question]
+      .filter(Boolean)
+      .join("\n\n"),
+    lab_question: "",
+  });
   const router = useRouter();
   const confirmation = useRef<HTMLDialogElement>(null);
   const questionRequest = useRef<{ key: string; id: string } | null>(null);
   const diagnosisRequest = useRef<string | null>(null);
+  const sending = useRef(false);
   const bottom = useRef<HTMLDivElement>(null);
   useStudyEvents(initial.step_id);
+  const pendingTurn = data.turns.find((t) =>
+    ["queued", "running"].includes(t.status),
+  );
+  const timing = useStudyTiming(
+    initial.step_id,
+    data.can_diagnose ? "diagnosis" : pendingTurn ? "response" : "round",
+    data.can_diagnose
+      ? 0
+      : pendingTurn?.round_number ||
+          Math.min(data.rounds_completed + 1, data.max_rounds),
+  );
   async function reconcile() {
     const [view, current] = await Promise.all([
       api<CaseView>(`cases/${data.step_id}`),
@@ -126,16 +163,24 @@ function CaseWorkspace({
   useEffect(() => {
     if (data.turns.length)
       bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [data.turns]);
+  }, [data.turns.length, data.pending]);
   async function ask() {
+    if (
+      sending.current ||
+      busy ||
+      data.pending ||
+      !data.can_ask ||
+      !draft.value.question.trim()
+    )
+      return;
+    sending.current = true;
+    timing.flush();
     setBusy(true);
     setError("");
     try {
       await draft.flush();
       const payload = {
-        target,
-        question: target === "patient" ? draft.value.question.trim() : "",
-        tests: target === "lab" ? draft.value.tests : [],
+        question: draft.value.question.trim(),
       };
       const key = JSON.stringify(payload);
       if (questionRequest.current?.key !== key)
@@ -147,7 +192,7 @@ function CaseWorkspace({
       setData(next.case);
       setRevision(next.session.revision);
       questionRequest.current = null;
-      draft.update(target === "patient" ? { question: "" } : { tests: [] });
+      draft.update({ question: "", lab_question: "", tests: [] });
     } catch (e) {
       setError(errorMessage(e));
       try {
@@ -156,10 +201,12 @@ function CaseWorkspace({
         /* Keep the original error and allow an explicit reload. */
       }
     } finally {
+      sending.current = false;
       setBusy(false);
     }
   }
   async function diagnose() {
+    timing.flush();
     setBusy(true);
     setError("");
     diagnosisRequest.current ??= crypto.randomUUID();
@@ -168,8 +215,7 @@ function CaseWorkspace({
       const next = await api<SessionView>(`cases/${data.step_id}/diagnosis`, {
         request_id: diagnosisRequest.current,
         revision,
-        diagnosis: draft.value.diagnosis.trim(),
-        confidence: draft.value.confidence,
+        diagnoses: diagnosisSubmission(draft.value.diagnoses),
       });
       confirmation.current?.close();
       router.push(stagePath(next));
@@ -181,29 +227,53 @@ function CaseWorkspace({
     }
   }
   const locked = busy || data.pending;
-  const canSubmit = !locked && draft.value.diagnosis.trim().length > 0;
+  const distribution = RankedDiagnosesSchema.safeParse(
+    diagnosisSubmission(draft.value.diagnoses),
+  );
+  const canSubmit = data.can_diagnose && !locked && distribution.success;
+  function updateDiagnosis(
+    index: number,
+    patch: Partial<(typeof draft.value.diagnoses)[number]>,
+  ) {
+    diagnosisRequest.current = null;
+    draft.update({
+      diagnoses: draft.value.diagnoses.map((item, i) => {
+        if (i !== index) return item;
+        const next = { ...item, ...patch };
+        if (!next.diagnosis.trim()) next.confidence = DEFAULT_CONFIDENCE;
+        return next;
+      }),
+    });
+  }
   return (
     <>
       <div className="task-heading">
         <div>
           <p className="eyebrow">
-            CASE {session.completed_cases + 1} OF {session.total_cases}
+            PATIENT CASE {session.completed_cases + 1} OF {session.total_cases}
           </p>
-          <h1>Clinical assessment</h1>
-          <p>Gather evidence, then submit your most likely diagnosis.</p>
+          <h1>Patient assessment</h1>
         </div>
         <div className="round-summary">
-          <span>Question rounds used</span>
+          <span>Questions answered</span>
           <div
             className="round-dots"
-            aria-label={`${data.rounds_used} of 3 rounds used`}
+            aria-label={`${Math.min(data.rounds_completed, data.max_rounds)} of ${data.max_rounds} questions answered`}
           >
-            {[1, 2, 3].map((n) => (
-              <span key={n} className={n <= data.rounds_used ? "used" : ""}>
-                {n <= data.rounds_used ? "✓" : n}
-              </span>
-            ))}
-            <strong>{data.rounds_used} / 3</strong>
+            {Array.from({ length: data.max_rounds }, (_, i) => i + 1).map(
+              (n) => (
+                <span
+                  key={n}
+                  className={n <= data.rounds_completed ? "used" : ""}
+                >
+                  {n <= data.rounds_completed ? "✓" : n}
+                </span>
+              ),
+            )}
+            <strong>
+              {Math.min(data.rounds_completed, data.max_rounds)} /{" "}
+              {data.max_rounds}
+            </strong>
           </div>
         </div>
       </div>
@@ -213,93 +283,81 @@ function CaseWorkspace({
           className="text-button"
           onClick={() => window.location.reload()}
         >
-          Reload saved case
+          Reload saved patient case
         </button>
       )}
       <div className="clinical-grid">
         <div className="clinical-left">
           <section className="panel case-brief">
-            <div className="panel-label">
-              <span className="mini-icon" aria-hidden="true">
-                ▤
-              </span>{" "}
-              CASE PRESENTATION
-            </div>
-            <h2>{data.title}</h2>
+            <h2>Patient case</h2>
             <p>{data.opening}</p>
-            <div className="case-note">
-              Ask the patient about their history. Request examination findings,
-              laboratory results and available images from the lab.
-            </div>
           </section>
-          <section className="panel diagnosis-panel">
-            <div className="panel-label">
-              <span className="mini-icon" aria-hidden="true">
-                ✓
-              </span>{" "}
-              YOUR ASSESSMENT
-            </div>
-            <h2>Most likely diagnosis</h2>
-            <p className="muted">
-              You can submit now or gather more evidence first.
-            </p>
-            <label className="sr-only" htmlFor="diagnosis">
-              Most likely diagnosis
-            </label>
-            <textarea
-              id="diagnosis"
-              rows={3}
-              maxLength={2000}
-              placeholder="Enter one diagnosis…"
-              value={draft.value.diagnosis}
-              disabled={busy}
-              onChange={(e) => {
-                diagnosisRequest.current = null;
-                draft.update({ diagnosis: e.target.value });
-              }}
-            />
-            <div className="confidence-heading">
-              <label htmlFor="confidence">Your confidence</label>
-              <output htmlFor="confidence">{draft.value.confidence}%</output>
-            </div>
-            <input
-              id="confidence"
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              disabled={busy}
-              value={draft.value.confidence}
-              onChange={(e) => {
-                diagnosisRequest.current = null;
-                draft.update({ confidence: Number(e.target.value) });
-              }}
-            />
-            <div className="range-labels">
-              <span>Not confident</span>
-              <span>Very confident</span>
-            </div>
-            <button
-              className="full-width"
-              disabled={!canSubmit}
-              onClick={() => confirmation.current?.showModal()}
-            >
-              Submit diagnosis <span aria-hidden="true">→</span>
-            </button>
-            <p className="save-status" role="status">
-              {draft.status}
-            </p>
-          </section>
+          {data.can_diagnose && (
+            <section className="panel diagnosis-panel" aria-label="Diagnosis">
+              <h2>Your diagnosis</h2>
+              <p className="muted" id="diagnosis-help">
+                Enter the single most likely diagnosis and rate your confidence
+                from 1 to 7.
+              </p>
+              <>
+                {draft.value.diagnoses.map((item, index) => (
+                  <fieldset
+                    className="diagnosis-entry"
+                    key={index}
+                    disabled={busy}
+                    aria-describedby="diagnosis-help"
+                  >
+                    <legend>Most likely diagnosis</legend>
+                    <label
+                      className="sr-only"
+                      htmlFor={`diagnosis-${index + 1}`}
+                    >
+                      Diagnosis
+                    </label>
+                    <textarea
+                      id={`diagnosis-${index + 1}`}
+                      rows={2}
+                      maxLength={2000}
+                      placeholder="Enter a diagnosis…"
+                      value={item.diagnosis}
+                      onChange={(e) =>
+                        updateDiagnosis(index, { diagnosis: e.target.value })
+                      }
+                    />
+                    <ConfidenceSlider
+                      value={item.confidence}
+                      disabled={busy || !item.diagnosis.trim()}
+                      onChange={(confidence) =>
+                        updateDiagnosis(index, { confidence })
+                      }
+                    />
+                  </fieldset>
+                ))}
+                {draft.value.diagnoses[0].diagnosis.trim() &&
+                  !distribution.success && (
+                    <p className="error-notice" role="alert">
+                      {distribution.error.issues[0].message}
+                    </p>
+                  )}
+                <button
+                  className="full-width"
+                  disabled={!canSubmit}
+                  onClick={() => confirmation.current?.showModal()}
+                >
+                  Submit diagnosis <span aria-hidden="true">→</span>
+                </button>
+                <p className="save-status" role="status">
+                  {draft.status}
+                </p>
+              </>
+            </section>
+          )}
         </div>
         <section className="panel conversation-panel">
           <div className="conversation-heading">
             <div>
-              <p className="panel-label">GATHER EVIDENCE</p>
-              <h2>Patient & investigations</h2>
+              <h2>Dialogue</h2>
             </div>
-            <span className="remaining">
-              {3 - data.rounds_used} rounds left
-            </span>
           </div>
           <div
             className="transcript"
@@ -308,57 +366,52 @@ function CaseWorkspace({
           >
             {!data.turns.length && (
               <div className="empty-conversation">
-                <span className="conversation-symbol" aria-hidden="true">
-                  ☏
-                </span>
-                <h3>What would you like to know?</h3>
-                <p>
-                  Ask the patient about their history or request tests. Each
-                  submission uses one round.
-                </p>
+                <h3>Ask the patient</h3>
               </div>
             )}
             {data.turns.map((t) => (
               <article className="exchange" key={t.id}>
                 <div className="exchange-meta">
-                  ROUND {t.round_number}
-                  <span>
-                    {t.target === "patient" ? "Patient history" : "Laboratory"}
-                  </span>
+                  QUESTION {t.round_number}
+                  <span>{speaker(t.target)}</span>
                 </div>
                 <div className="question-bubble">
                   <strong>You</strong>
-                  <p>
-                    {t.target === "patient" ? t.question : t.tests.join(", ")}
-                  </p>
+                  <p>{t.question || t.tests.join(", ")}</p>
                 </div>
-                <div
-                  className={`answer-bubble${["failed", "interrupted"].includes(t.status) ? " failed" : ""}`}
-                >
-                  <strong>
-                    {t.target === "patient" ? "Patient" : "Laboratory"}
-                  </strong>
-                  {["queued", "running"].includes(t.status) ? (
-                    <p className="thinking" role="status">
-                      Preparing a response<span>…</span>
-                    </p>
-                  ) : t.status === "succeeded" ? (
-                    <>
-                      <p>{t.response}</p>
-                      {t.images?.map((image) => (
-                        <CaseImage key={image.url} image={image} />
-                      ))}
-                    </>
-                  ) : (
-                    <p>
-                      This response could not be completed. Your round has been
-                      returned.{" "}
-                      {data.can_ask
-                        ? "You can try another question or submit your diagnosis."
-                        : "Please submit your diagnosis with the available evidence."}
-                    </p>
-                  )}
-                </div>
+                {t.status === "succeeded" ? (
+                  (
+                    t.responses || [
+                      { target: t.target, response: t.response || "" },
+                    ]
+                  ).map((reply) => (
+                    <div className="answer-bubble" key={reply.target}>
+                      <strong>{speaker(reply.target)}</strong>
+                      <p>{reply.response}</p>
+                      {(reply.target === "patient" || reply.target === "lab") &&
+                        t.images?.map((image) => (
+                          <CaseImage key={image.url} image={image} />
+                        ))}
+                    </div>
+                  ))
+                ) : (
+                  <div
+                    className={`answer-bubble${["failed", "interrupted"].includes(t.status) ? " failed" : ""}`}
+                  >
+                    <strong>{speaker(t.target)}</strong>
+                    {["queued", "running"].includes(t.status) ? (
+                      <ResponseProgress target={t.target} />
+                    ) : (
+                      <p>
+                        No response received. This question has not been
+                        counted.{" "}
+                        {data.can_ask
+                          ? "Please try again."
+                          : "Please wait and reload to retry this question."}
+                      </p>
+                    )}
+                  </div>
+                )}
               </article>
             ))}
             <div ref={bottom} />
@@ -366,105 +419,43 @@ function CaseWorkspace({
           <div className="composer">
             {data.can_ask || data.pending ? (
               <>
-                <div
-                  className="composer-tabs"
-                  role="tablist"
-                  aria-label="Evidence source"
-                >
-                  <button
-                    role="tab"
-                    aria-selected={target === "patient"}
-                    aria-controls="evidence-panel"
-                    id="patient-tab"
-                    className={target === "patient" ? "active" : ""}
+                <div>
+                  <label className="sr-only" htmlFor="chat-question">
+                    Your question
+                  </label>
+                  <textarea
+                    id="chat-question"
+                    enterKeyHint="send"
+                    onKeyDown={(e) => {
+                      if (
+                        e.key !== "Enter" ||
+                        e.shiftKey ||
+                        e.nativeEvent.isComposing ||
+                        e.nativeEvent.keyCode === 229
+                      )
+                        return;
+                      e.preventDefault();
+                      if (!e.repeat) void ask();
+                    }}
+                    rows={3}
+                    maxLength={6000}
+                    placeholder="Type your question…"
                     disabled={locked}
-                    onClick={() => setTarget("patient")}
-                  >
-                    Ask patient
-                  </button>
-                  <button
-                    role="tab"
-                    aria-selected={target === "lab"}
-                    aria-controls="evidence-panel"
-                    id="lab-tab"
-                    className={target === "lab" ? "active" : ""}
-                    disabled={locked}
-                    onClick={() => setTarget("lab")}
-                  >
-                    Tests & imaging
-                  </button>
-                </div>
-                <div
-                  role="tabpanel"
-                  id="evidence-panel"
-                  aria-labelledby={
-                    target === "patient" ? "patient-tab" : "lab-tab"
-                  }
-                >
-                  {target === "patient" ? (
-                    <>
-                      <label className="sr-only" htmlFor="patient-question">
-                        Question for the patient
-                      </label>
-                      <textarea
-                        id="patient-question"
-                        rows={3}
-                        maxLength={2000}
-                        placeholder="What would you like to ask the patient?"
-                        disabled={locked}
-                        value={draft.value.question}
-                        onChange={(e) =>
-                          draft.update({ question: e.target.value })
-                        }
-                      />
-                    </>
-                  ) : (
-                    <fieldset className="test-options" disabled={locked}>
-                      <legend>Select investigations for this round</legend>
-                      {data.available_tests.map((t) => (
-                        <label key={t}>
-                          <input
-                            type="checkbox"
-                            checked={draft.value.tests.includes(t)}
-                            onChange={(e) =>
-                              draft.update({
-                                tests: e.target.checked
-                                  ? [...draft.value.tests, t].slice(0, 10)
-                                  : draft.value.tests.filter((x) => x !== t),
-                              })
-                            }
-                          />
-                          {t}
-                        </label>
-                      ))}
-                      {!data.available_tests.length && (
-                        <p>No tests are available for this case.</p>
-                      )}
-                      <p className="muted">
-                        Select up to 10 investigations in one round. Images
-                        appear with the corresponding results when available.
-                      </p>
-                    </fieldset>
-                  )}
+                    value={draft.value.question}
+                    onChange={(e) => draft.update({ question: e.target.value })}
+                  />
                   <div className="composer-actions">
-                    <span>Uses 1 question round</span>
                     <button
                       onClick={ask}
                       disabled={
-                        locked ||
-                        !data.can_ask ||
-                        (target === "patient"
-                          ? !draft.value.question.trim()
-                          : !draft.value.tests.length)
+                        locked || !data.can_ask || !draft.value.question.trim()
                       }
                     >
                       {data.pending
                         ? "Waiting for response…"
                         : busy
                           ? "Saving…"
-                          : target === "patient"
-                            ? "Send question"
-                            : "Request selected tests"}{" "}
+                          : "Send question"}{" "}
                       <span aria-hidden="true">↑</span>
                     </button>
                   </div>
@@ -473,12 +464,14 @@ function CaseWorkspace({
             ) : (
               <div className="rounds-finished">
                 <strong>
-                  {data.rounds_used >= 3
-                    ? "All three rounds are complete."
-                    : "No further questions are available."}
+                  {data.can_diagnose
+                    ? "Questions complete."
+                    : "Requests are temporarily paused."}
                 </strong>
                 <p>
-                  Review the evidence and submit your diagnosis to continue.
+                  {data.can_diagnose
+                    ? "Enter your diagnosis and confidence rating to continue."
+                    : `Please reload in ${Math.max(1, Math.ceil(data.retry_after_seconds / 60))} minutes to ask the remaining questions.`}
                 </p>
               </div>
             )}
@@ -486,18 +479,16 @@ function CaseWorkspace({
         </section>
       </div>
       <dialog ref={confirmation} className="dialog">
-        <p className="eyebrow">CONFIRM YOUR ASSESSMENT</p>
         <h2>Submit this diagnosis?</h2>
-        <p className="confirmation-diagnosis">{draft.value.diagnosis}</p>
-        <p>
-          Confidence: <strong>{draft.value.confidence}%</strong> ·{" "}
-          {data.rounds_used} of 3 rounds used
-        </p>
+        <div className="diagnosis-review">
+          <p>{draft.value.diagnoses[0].diagnosis.trim()}</p>
+          <strong>Confidence: {draft.value.diagnoses[0].confidence} / 7</strong>
+        </div>
         <p>
           This answer is final. You will continue to the{" "}
           {session.completed_cases + 1 === session.total_cases
-            ? "final check"
-            : "next case"}
+            ? "final questionnaire"
+            : "next patient case"}
           .
         </p>
         <div className="dialog-actions">
@@ -508,7 +499,7 @@ function CaseWorkspace({
           >
             Keep reviewing
           </button>
-          <button disabled={busy} onClick={diagnose}>
+          <button disabled={!canSubmit} onClick={diagnose}>
             {busy ? "Submitting…" : "Confirm diagnosis"}
           </button>
         </div>

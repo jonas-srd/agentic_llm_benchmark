@@ -325,11 +325,54 @@ input[type="radio"] {
 }
 .study-footer {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 18px;
   justify-content: center;
-  padding: 28px 10px;
-  font-size: 11px;
-  color: #878987;
+  padding: 8px 20px max(28px, env(safe-area-inset-bottom));
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.study-footer a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  text-underline-offset: 3px;
+}
+.legal-back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-bottom: 12px;
+}
+.legal-page {
+  overflow-wrap: anywhere;
+}
+.legal-contacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 32px;
+}
+.legal-contacts address {
+  font-style: normal;
+  margin-bottom: 18px;
+}
+.legal-details {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 28px;
+}
+.legal-sources {
+  margin: 28px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 650px) {
+  .legal-contacts {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
 }
 .field {
   margin: 24px 0;
@@ -376,14 +419,16 @@ textarea:disabled {
   background: #f8f8f8;
 }
 .instruction-list {
-  margin: 35px 0;
+  list-style: none;
+  padding: 0;
+  margin: 28px 0;
 }
-.instruction-list > div {
+.instruction-list > li {
   display: flex;
   gap: 20px;
   margin: 26px 0;
 }
-.instruction-list > div > span {
+.instruction-list > li > span {
   background: var(--green-light);
   color: var(--green);
   border-radius: 50%;
@@ -403,6 +448,12 @@ textarea:disabled {
   font-size: 14px;
   color: var(--muted);
   margin-bottom: 0;
+}
+.instruction-list p + p {
+  margin-top: 10px;
+}
+.instruction-list strong {
+  color: var(--ink);
 }
 .success-note {
   background: var(--green-light);
@@ -462,6 +513,10 @@ textarea:disabled {
   place-items: center;
   font-size: 30px;
   margin: 24px 0;
+}
+.completion-code code {
+  font-size: 1.5rem;
+  user-select: all;
 }
 .error-notice {
   border: 1px solid #e4b7b0;
@@ -588,6 +643,126 @@ textarea:disabled {
 .diagnosis-panel h2 {
   font-size: 18px;
   margin-bottom: 8px;
+}
+.diagnosis-entry {
+  min-width: 0;
+  padding: 0;
+  margin: 22px 0;
+  border: 0;
+}
+.diagnosis-entry legend {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+.diagnosis-entry textarea {
+  min-height: 68px;
+}
+.confidence-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+.confidence-field {
+  margin-top: 12px;
+}
+.confidence-field input[type="range"] {
+  min-height: 36px;
+  margin: 0;
+}
+.confidence-ticks {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.scale-anchors {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.scale-anchors span {
+  max-width: 46%;
+}
+.scale-anchors span:last-child {
+  text-align: right;
+}
+.survey-section {
+  margin: 34px 0 20px;
+  font-size: 19px;
+}
+.survey-multiple {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.survey-multiple legend {
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.survey-multiple .check-line {
+  margin: 0 0 12px;
+  min-height: 44px;
+}
+.survey-likert {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.survey-likert legend {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.likert-options {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+.likert-options label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 64px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.likert-options label:has(input:checked) {
+  background: var(--green-light);
+  border-color: var(--green);
+}
+.likert-options label:focus-within {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.likert-options input {
+  margin: 0;
+}
+.likert-options span {
+  font-size: 13px;
+}
+.survey-likert .scale-anchors {
+  margin-bottom: 10px;
+}
+.diagnosis-review {
+  margin: 16px 0;
+}
+.diagnosis-review p {
+  padding: 10px 0;
+  overflow-wrap: anywhere;
+}
+.diagnosis-review strong {
+  display: block;
 }
 .confidence-heading {
   display: flex;
@@ -765,13 +940,9 @@ input[type="range"] {
 .composer-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   margin-top: 14px;
-}
-.composer-actions > span {
-  font-size: 10px;
-  color: var(--muted);
 }
 .composer-actions button {
   font-size: 12px;
@@ -1041,10 +1212,6 @@ input[type="range"] {
   .dialog-actions {
     flex-direction: column-reverse;
   }
-  .study-footer {
-    font-size: 10px;
-    gap: 9px;
-  }
   .check-line {
     font-size: 13px;
   }
@@ -1075,4 +1242,132 @@ input[type="range"] {
   margin-top: 8px;
   font-size: 12px;
   color: #626a65;
+}
+.diagnosis-locked {
+  padding: 18px;
+  border: 1px dashed #b8c9be;
+  border-radius: 8px;
+  background: #f6faf7;
+  color: var(--muted);
+}
+.diagnosis-locked strong {
+  color: var(--ink);
+}
+.diagnosis-locked p {
+  margin: 8px 0;
+}
+.response-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+.response-spinner {
+  display: inline-block;
+  flex: 0 0 20px;
+  height: 20px;
+  border: 2px solid #bedfc9;
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: response-spin 1s linear infinite;
+  will-change: transform;
+}
+@keyframes response-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.panel,
+.clinical-left,
+.exchange,
+.conversation-heading > div {
+  min-width: 0;
+}
+.case-brief p,
+.question-bubble p,
+.answer-bubble p,
+.test-options label,
+.confirmation-diagnosis {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 850px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+  button,
+  .button,
+  .help-button {
+    min-height: 44px;
+  }
+  .help-button {
+    min-width: 44px;
+    padding: 0;
+  }
+  .test-options label,
+  .check-line,
+  .boolean-question label,
+  .analysis-options label {
+    min-height: 44px;
+    align-items: center;
+  }
+  .test-options input,
+  .check-line input {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+  }
+  .conversation-heading {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .transcript {
+    max-height: none;
+    overflow: visible;
+    min-height: 160px;
+  }
+  .composer-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .composer-tabs button {
+    padding: 10px 8px;
+  }
+  .page-shell {
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+  .dialog {
+    max-width: calc(100vw - 24px);
+    max-height: 85dvh;
+    overflow: auto;
+  }
+  input[type="range"] {
+    min-height: 44px;
+    touch-action: pan-y;
+  }
+}
+@media (max-width: 360px) {
+  .header-inner {
+    padding: 0 10px;
+    gap: 8px;
+  }
+  .header-right {
+    gap: 8px;
+  }
+  .brand-mark {
+    display: none;
+  }
+  .intro-facts {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .intro-facts > div {
+    border-right: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .response-spinner {
+    animation-duration: 3s;
+  }
 }

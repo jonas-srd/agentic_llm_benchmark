@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { CaseSpec } from "@clinical/shared";
+import { currentInterviewerModel } from "@clinical/shared";
 import { one, insert, now, type Database, type Row } from "../lib/db.js";
 import { ProviderError, type Provider } from "../lib/openrouter.js";
-import { PATIENT, LAB, PROMPT_VERSION, runSimulation } from "./agents.js";
+import { runSimulation } from "./agents.js";
+import { answerPatient } from "./patient.js";
+import {
+  enqueueJudgment,
+  judgeDiagnoses,
+  JUDGE_PROMPT_VERSION,
+} from "./judge.js";
 export const LEASE_SECONDS = 180;
-type Queue = "clinical_turns" | "runs";
+type Queue = "clinical_turns" | "runs" | "diagnosis_judgments";
 export async function claimJob(
   db: Database,
   worker: string,
@@ -63,49 +70,39 @@ export async function processTurn(
   const c: CaseSpec = s.snapshot.cases.find(
     (c: CaseSpec) => c.id === a.case_id,
   );
+  const history = (
+    await db.query(
+      "SELECT * FROM clinical_turns WHERE case_attempt_id=$1 AND status='succeeded' ORDER BY created_at,id",
+      [a.id],
+    )
+  ).rows;
+  async function renew() {
+    const r = await db.query(
+      "UPDATE clinical_turns SET lease_until=$1 WHERE id=$2 AND worker_id=$3 AND status='running' AND lease_until>$4",
+      [now() + LEASE_SECONDS, id, worker, now()],
+    );
+    if (r.rowCount !== 1) throw new ProviderError("worker_lease_lost");
+  }
   let status = "succeeded",
     response: string | null = null,
     metadata: Row | null = null,
     errorCode: string | null = null;
   try {
-    let payload: Row;
-    if (turn.target === "patient") {
-      const history = (
-        await db.query(
-          "SELECT question,response FROM clinical_turns WHERE case_attempt_id=$1 AND target='patient' AND status='succeeded' ORDER BY created_at",
-          [a.id],
-        )
-      ).rows;
-      payload = {
-        patient_facts: c.patient_facts,
-        question: turn.question,
-        previous_questions: history.map((t) => ({
-          question: t.question,
-          answer: t.response,
-        })),
-      };
-    } else
-      payload = {
-        requested_results: Object.fromEntries(
-          turn.tests.map((key: string) => [key, c.labs[key]]),
-        ),
-      };
-    const reply = await provider.complete(s.model_id, [
-      { role: "system", content: turn.target === "patient" ? PATIENT : LAB },
-      { role: "user", content: JSON.stringify(payload) },
-    ]);
-    const { content, ...meta } = reply;
-    response = content;
-    metadata = { ...meta, prompt_version: "clinician-interaction-v1" };
-    if (turn.target === "lab") {
-      metadata.lab_explanation = content;
-      metadata.released_image_ids = (c.media || [])
-        .filter((m) => turn.tests.includes(m.test))
-        .map((m) => m.asset_id);
-      response = Object.entries(payload.requested_results)
-        .map(([k, v]) => `${k}: ${v}`)
-        .join("\n");
-    }
+    await renew();
+    const reply = await answerPatient(
+      provider,
+      c,
+      turn.question || turn.tests.join(", "),
+      history.map((t) => ({
+        question: t.question || t.tests.join(", "),
+        answer: t.response,
+      })),
+    );
+    response = reply.response;
+    metadata = {
+      ...reply.metadata,
+      responses: [{ target: "patient", response: reply.response }],
+    };
   } catch (error) {
     status = "failed";
     errorCode =
@@ -152,15 +149,15 @@ export async function processRun(
     if (r.rowCount !== 1) throw new ProviderError("worker_lease_lost");
   }
   let status = "succeeded",
-    result: unknown = null,
+    result: Awaited<ReturnType<typeof runSimulation>> | null = null,
     errorCode: string | null = null;
   try {
     result = await runSimulation(
-      s.snapshot,
+      db,
       c,
-      s.model_id,
+      currentInterviewerModel(s.model_id),
       provider,
-      async (role, reply) => {
+      async (role, reply, promptVersion) => {
         await renew();
         await insert(db, "messages", {
           id: randomUUID(),
@@ -168,7 +165,7 @@ export async function processRun(
           sequence: sequence++,
           role,
           ...reply,
-          prompt_version: PROMPT_VERSION,
+          prompt_version: promptVersion,
           created_at: now(),
         });
       },
@@ -181,8 +178,61 @@ export async function processRun(
         ? error.message
         : "invalid_agent_output_or_processing_error";
   }
+  await db.tx(async (tx) => {
+    const changed = await tx.query(
+      "UPDATE runs SET status=$1,result=$2,error_code=$3,finished_at=$4,lease_until=NULL WHERE id=$5 AND worker_id=$6 AND status='running' AND lease_until>$4",
+      [status, result, errorCode, now(), id, worker],
+    );
+    if (changed.rowCount && result)
+      await enqueueJudgment(
+        tx,
+        { runId: id },
+        c,
+        result.diagnoses,
+        result.confidence_scale,
+      );
+  });
+}
+
+export async function processJudgment(
+  db: Database,
+  provider: Provider,
+  id: string,
+  worker: string,
+) {
+  const job = await one(db, "SELECT * FROM diagnosis_judgments WHERE id=$1", [
+    id,
+  ]);
+  if (
+    !job ||
+    job.status !== "running" ||
+    job.worker_id !== worker ||
+    job.lease_until <= now()
+  )
+    return;
+  async function renew() {
+    const r = await db.query(
+      "UPDATE diagnosis_judgments SET lease_until=$1 WHERE id=$2 AND worker_id=$3 AND status='running' AND lease_until>$4",
+      [now() + LEASE_SECONDS, id, worker, now()],
+    );
+    if (r.rowCount !== 1) throw new ProviderError("worker_lease_lost");
+  }
+  let status = "succeeded",
+    result: unknown = null,
+    errorCode: string | null = null;
+  try {
+    if (job.prompt_version !== JUDGE_PROMPT_VERSION)
+      throw new Error("unsupported_judge_version");
+    result = await judgeDiagnoses(provider, job.payload, renew);
+  } catch (error) {
+    status = "failed";
+    errorCode =
+      error instanceof ProviderError
+        ? error.message
+        : "invalid_judge_output_or_processing_error";
+  }
   await db.query(
-    "UPDATE runs SET status=$1,result=$2,error_code=$3,finished_at=$4,lease_until=NULL WHERE id=$5 AND worker_id=$6 AND status='running' AND lease_until>$4",
+    "UPDATE diagnosis_judgments SET status=$1,result=$2,error_code=$3,finished_at=$4,lease_until=NULL WHERE id=$5 AND worker_id=$6 AND status='running' AND lease_until>$4",
     [status, result, errorCode, now(), id, worker],
   );
 }

@@ -17,6 +17,7 @@ const jsonColumns = new Set([
   "tests",
   "metadata_json",
   "data",
+  "diagnoses_json",
 ]);
 function decode<T>(row: Row): T {
   for (const key of jsonColumns)

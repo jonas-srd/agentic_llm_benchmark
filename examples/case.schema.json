@@ -82,6 +82,49 @@
       "default": "",
       "type": "string",
       "maxLength": 300
+    },
+    "accepted_alternatives": {
+      "type": "array",
+      "maxItems": 30,
+      "default": [],
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      }
+    },
+    "fact_pack": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+          },
+          "status": {
+            "enum": [
+              "recorded",
+              "present",
+              "absent",
+              "unknown"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "text"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [

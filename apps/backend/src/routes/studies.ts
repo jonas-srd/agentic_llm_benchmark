@@ -1,7 +1,12 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { StudySchema, EnrollSchema, MODEL_IDS } from "@clinical/shared";
+import {
+  StudySchema,
+  EnrollSchema,
+  MODEL_IDS,
+  isPostSurvey,
+} from "@clinical/shared";
 import { createSession, studyInfo } from "../domain/study.js";
 import {
   insert,
@@ -16,23 +21,29 @@ import type { Settings } from "../lib/config.js";
 import rawDemo from "../domain/demo.json" with { type: "json" };
 import { readFile } from "node:fs/promises";
 import { saveAsset, requireAssets } from "../domain/media.js";
+import {
+  clinicianProtocol,
+  SUPPORT_MODEL,
+  CLINICIAN_INSTRUCTIONS,
+} from "../domain/protocol.js";
 export function demoConfig() {
-  return StudySchema.parse({
-    ...rawDemo,
-    id: "clinician-demo-v2",
-    version: "2",
-    steps: [
-      rawDemo.steps[0],
-      {
-        id: "instructions",
-        title: "Instructions",
-        kind: "information",
-        instructions:
-          "Review each case and use up to three question rounds shared between patient and lab. Submit a diagnosis and confidence whenever you are ready. Answers are final once submitted.",
-      },
-      rawDemo.steps.at(-1),
-    ],
-  });
+  return clinicianProtocol(
+    StudySchema.parse({
+      ...rawDemo,
+      id: "clinician-demo-v2",
+      version: "2",
+      steps: [
+        rawDemo.steps[0],
+        {
+          id: "instructions",
+          title: "Instructions",
+          kind: "information",
+          instructions: CLINICIAN_INSTRUCTIONS,
+        },
+        rawDemo.steps.at(-1),
+      ],
+    }),
+  );
 }
 export function studyRoutes(
   db: Database,
@@ -50,7 +61,7 @@ export function studyRoutes(
       throw new HTTPException(503, {
         message: "Test cases are temporarily unavailable",
       });
-    const original = StudySchema.parse(source.config);
+    const original = clinicianProtocol(StudySchema.parse(source.config));
     return StudySchema.parse({
       ...original,
       id: `demo-${createHash("sha256").update(original.id).digest("hex").slice(0, 32)}`,
@@ -58,12 +69,12 @@ export function studyRoutes(
       prolific_study_id: null,
       completion_code: null,
       max_participants: settings.publicDemoMaxSessions,
-      consent_version: "public-demo-1",
-      consent_text:
-        "This is a test session. No Prolific account or invitation is needed. Your answers and interaction timing are saved for testing and excluded from the research analysis. There is no Prolific submission or payment. Do not enter real patient information.",
-      // Testers can explore the cases without claiming to be a qualified physician.
+      // Direct access keeps the same participant information and declarations.
+      // Demo sessions remain excluded from analysis at the persistence layer.
       steps: [
-        ...original.steps.filter((step) => step.kind === "information"),
+        ...original.steps.filter(
+          (step) => step.kind === "information" || isPostSurvey(step.id),
+        ),
         { id: "final", title: "Finish test session", kind: "final_check" },
       ],
     });
@@ -73,6 +84,8 @@ export function studyRoutes(
     const body = EnrollSchema.pick({
       consent: true,
       consent_version: true,
+      eligibility_confirmed: true,
+      intro_timing: true,
     }).parse(await c.req.json());
     return c.json(
       await db.tx(async (tx) => {
@@ -101,6 +114,8 @@ export function studyRoutes(
             PROLIFIC_PID: randomBytes(12).toString("hex"),
             STUDY_ID: "0".repeat(24),
             SESSION_ID: randomBytes(12).toString("hex"),
+            intro_timing: body.intro_timing,
+            eligibility_confirmed: body.eligibility_confirmed,
           },
           settings,
         );
@@ -119,7 +134,7 @@ export function studyRoutes(
       completion_code: null,
     });
     await requireAssets(db, config.cases);
-    return config;
+    return clinicianProtocol(config);
   }
   app.post("/admin/media", async (c) => {
     requireAdmin(c.req.header("X-Admin-Key"), settings);
@@ -129,12 +144,13 @@ export function studyRoutes(
     requireAdmin(c.req.header("X-Admin-Key"), settings);
     return c.json({
       models: MODEL_IDS,
-      assignment: "one_model_per_session_all_roles",
+      support_model: SUPPORT_MODEL,
+      assignment: "fixed_support_model_for_patient_and_lab",
     });
   });
   app.post("/admin/studies", async (c) => {
     requireAdmin(c.req.header("X-Admin-Key"), settings);
-    const config = StudySchema.parse(await c.req.json());
+    const config = clinicianProtocol(StudySchema.parse(await c.req.json()));
     await requireAssets(db, config.cases);
     try {
       await insert(db, "studies", {
@@ -184,7 +200,7 @@ export function studyRoutes(
     ]);
     if (!s) throw new HTTPException(404, { message: "Study not found" });
     if (!s.active) requireAdmin(c.req.header("X-Admin-Key"), settings);
-    return c.json(studyInfo(StudySchema.parse(s.config)));
+    return c.json(studyInfo(clinicianProtocol(StudySchema.parse(s.config))));
   });
   app.post("/studies/:studyId/sessions", async (c) => {
     const body = EnrollSchema.parse(await c.req.json());
@@ -198,7 +214,7 @@ export function studyRoutes(
             throw new HTTPException(404, { message: "Study not found" });
           if (!study.active)
             requireAdmin(c.req.header("X-Admin-Key"), settings);
-          const config = StudySchema.parse(study.config);
+          const config = clinicianProtocol(StudySchema.parse(study.config));
           if (
             config.prolific_study_id &&
             body.STUDY_ID !== config.prolific_study_id
@@ -247,10 +263,19 @@ export function studyRoutes(
   });
   app.post("/preview/sessions", async (c) => {
     localOnly(c);
-    const body = await c.req.json();
+    const body = EnrollSchema.pick({
+      consent: true,
+      intro_timing: true,
+      consent_version: true,
+      eligibility_confirmed: true,
+    }).parse(await c.req.json());
     if (body?.consent !== true)
       throw new HTTPException(422, { message: "Preview consent required" });
     const config = await previewConfig();
+    if (body.consent_version !== config.consent_version)
+      throw new HTTPException(409, {
+        message: "Consent changed; reload the page",
+      });
     return c.json(
       await db.tx(async (tx) => {
         await tx.query(
@@ -264,6 +289,8 @@ export function studyRoutes(
             PROLIFIC_PID: randomBytes(12).toString("hex"),
             STUDY_ID: "0".repeat(24),
             SESSION_ID: randomBytes(12).toString("hex"),
+            intro_timing: body.intro_timing,
+            eligibility_confirmed: body.eligibility_confirmed,
           },
           settings,
         );

@@ -31,7 +31,7 @@ export default defineRailway(() => {
       SESSION_SECRET: preserve(),
       OPENROUTER_API_KEY: preserve(),
       FRONTEND_URL: "https://${{web.RAILWAY_PUBLIC_DOMAIN}}",
-      PUBLIC_DEMO_STUDY_ID: "clinical-150-ae4e477e",
+      PUBLIC_DEMO_STUDY_ID: "clinical-300-0d303432",
       PUBLIC_DEMO_MAX_SESSIONS: "100",
     },
   });

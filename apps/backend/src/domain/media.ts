@@ -48,3 +48,28 @@ export async function requireAssets(db: Queryable, cases: CaseSpec[]) {
       });
   }
 }
+
+export function selectedCaseMedia(c: CaseSpec, ids: string[]) {
+  return (c.media || []).filter((asset) => ids.includes(asset.asset_id));
+}
+
+export async function loadDoctorImages(
+  db: Queryable,
+  c: CaseSpec,
+  ids: string[],
+) {
+  return Promise.all(
+    selectedCaseMedia(c, ids).map(async (image) => {
+      const asset = await one(
+        db,
+        "SELECT mime_type,data_base64 FROM case_media WHERE id=$1",
+        [image.asset_id],
+      );
+      if (!asset) throw new Error("missing_released_image");
+      return {
+        caption: image.caption,
+        url: `data:${asset.mime_type};base64,${asset.data_base64}`,
+      };
+    }),
+  );
+}

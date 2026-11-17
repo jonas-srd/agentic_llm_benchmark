@@ -1,4 +1,4 @@
-import { getSession, getStudy } from "@/lib/backend";
+import { ApiError, getStudy, sessionForEntry } from "@/lib/backend";
 import { IntroStage } from "@/components/stages/intro";
 import { StageCard } from "@/components/ui/stage-card";
 import { redirect } from "next/navigation";
@@ -11,7 +11,20 @@ export default async function Home({
 }) {
   const params = await searchParams;
   const study = typeof params.study === "string" ? params.study : undefined;
-  const session = await getSession();
+  let session;
+  try {
+    session = await sessionForEntry(study, params);
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![409, 422].includes(e.status)) throw e;
+    return (
+      <main className="page-shell">
+        <StageCard
+          title="Open your Prolific study link"
+          description={e.message}
+        />
+      </main>
+    );
+  }
   if (session && !study) redirect(stagePath(session));
   try {
     const info = await getStudy(study);

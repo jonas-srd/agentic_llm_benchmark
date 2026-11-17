@@ -1,12 +1,18 @@
 import "server-only";
 import { cookies } from "next/headers";
-import type { SessionView, StudyInfo } from "@clinical/shared";
+import {
+  EnrollSchema,
+  type SessionView,
+  type StudyInfo,
+} from "@clinical/shared";
 export const COOKIE = "clinical_session";
 export interface Credentials {
   id: string;
   token: string;
   study: string;
   pid: string;
+  prolificStudyId?: string;
+  prolificSessionId?: string;
 }
 export class ApiError extends Error {
   constructor(
@@ -76,8 +82,10 @@ export async function backend<T>(
     );
   return data;
 }
-export async function getSession(): Promise<SessionView | null> {
-  const auth = await credentials();
+export async function getSession(
+  auth?: Credentials | null,
+): Promise<SessionView | null> {
+  if (auth === undefined) auth = await credentials();
   if (!auth) return null;
   try {
     return await backend<SessionView>(`/v1/sessions/${auth.id}`, { auth });
@@ -85,6 +93,40 @@ export async function getSession(): Promise<SessionView | null> {
     if (e instanceof ApiError && [401, 404].includes(e.status)) return null;
     throw e;
   }
+}
+const prolificIds = EnrollSchema.pick({
+  PROLIFIC_PID: true,
+  STUDY_ID: true,
+  SESSION_ID: true,
+}).strip();
+export async function sessionForEntry(
+  study: string | undefined,
+  input: Record<string, unknown>,
+) {
+  const isProlific =
+    study !== undefined ||
+    Object.keys(prolificIds.shape).some((key) => key in input);
+  if (!isProlific) return getSession();
+  const ids = prolificIds.safeParse(input);
+  if (!study || !ids.success)
+    throw new ApiError(
+      422,
+      "Open your personal study link from Prolific. This link is missing valid study or participant details.",
+    );
+  const auth = await credentials();
+  const existing = await getSession(auth);
+  if (!existing || existing.is_demo) return null;
+  if (
+    auth?.study !== study ||
+    auth.pid !== ids.data.PROLIFIC_PID ||
+    (auth.prolificStudyId && auth.prolificStudyId !== ids.data.STUDY_ID) ||
+    (auth.prolificSessionId && auth.prolificSessionId !== ids.data.SESSION_ID)
+  )
+    throw new ApiError(
+      409,
+      "This browser is linked to a different participation. Open your personal Prolific link in a private browser window.",
+    );
+  return existing;
 }
 export async function getStudy(id?: string): Promise<StudyInfo> {
   return backend(

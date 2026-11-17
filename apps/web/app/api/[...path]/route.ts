@@ -5,11 +5,12 @@ import {
   backend,
   credentials,
   getSession,
+  sessionForEntry,
   COOKIE,
   ApiError,
   directEntryPath,
 } from "@/lib/backend";
-import type { SessionView } from "@clinical/shared";
+import { DurationSchema, type SessionView } from "@clinical/shared";
 export const runtime = "nodejs";
 const Start = z
   .object({
@@ -18,7 +19,9 @@ const Start = z
       .regex(/^[A-Za-z0-9_-]{1,64}$/)
       .optional(),
     consent: z.literal(true),
+    eligibility_confirmed: z.literal(true).optional(),
     consent_version: z.string().max(100),
+    intro_timing: DurationSchema.optional(),
     PROLIFIC_PID: z.string().max(64).optional(),
     STUDY_ID: z.string().max(64).optional(),
     SESSION_ID: z.string().max(64).optional(),
@@ -68,7 +71,7 @@ async function handle(
     }
     if (path === "start" && post) {
       const input = Start.parse(body);
-      const existing = await getSession();
+      const existing = await sessionForEntry(input.study, input);
       if (existing)
         throw new ApiError(
           409,
@@ -90,6 +93,8 @@ async function handle(
             token: session_token,
             study: study || "demo",
             pid: input.PROLIFIC_PID || "",
+            prolificStudyId: input.STUDY_ID,
+            prolificSessionId: input.SESSION_ID,
           }),
         ).toString("base64url"),
         {
@@ -124,7 +129,7 @@ async function handle(
       if (!upstream.ok)
         throw new ApiError(
           upstream.status,
-          "Image not available for this case.",
+          "Image not available for this patient case.",
         );
       if (!["image/jpeg", "image/png", "image/webp"].includes(mime))
         throw new ApiError(502, "Invalid image response.");
@@ -155,7 +160,8 @@ async function handle(
       /^cases\/[A-Za-z0-9_-]{1,64}\/(questions|diagnosis|draft)$/.test(path)
     )
       suffix = `/${path}`;
-    else if (post && ["events", "runs"].includes(path)) suffix = `/${path}`;
+    else if (post && ["events", "timing", "runs"].includes(path))
+      suffix = `/${path}`;
     else if (!post && /^runs\/[a-f0-9-]{36}$/.test(path)) suffix = `/${path}`;
     else throw new ApiError(404, "Not found");
     return NextResponse.json(

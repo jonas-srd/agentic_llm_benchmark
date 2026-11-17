@@ -25,7 +25,7 @@ export function stageProgress(session: SessionView) {
           : session.step?.title || "Study",
     subtitle:
       session.step?.kind === "diagnosis"
-        ? `Case ${session.completed_cases + 1} of ${session.total_cases}`
+        ? `Patient case ${session.completed_cases + 1} of ${session.total_cases}`
         : "Clinical reasoning study",
   };
 }

@@ -9,7 +9,7 @@ export function StageCard({
   eyebrow?: string;
   title: string;
   description?: string;
-  children: ReactNode;
+  children?: ReactNode;
   wide?: boolean;
 }) {
   return (

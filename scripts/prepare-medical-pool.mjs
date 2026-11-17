@@ -2,7 +2,11 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { StudySchema } from "@clinical/shared";
+import {
+  StudySchema,
+  CLINICIAN_CONSENT_TEXT,
+  PARTICIPANT_INFO_VERSION,
+} from "@clinical/shared";
 import {
   samplePool,
   adaptCase,
@@ -12,6 +16,7 @@ import {
   REPOSITORY,
   SOURCE_COMMIT,
   ADAPTER_VERSION,
+  SELECTION,
 } from "./medical-pool.mjs";
 const [repository, destination] = process.argv.slice(2);
 if (!repository || !destination)
@@ -117,7 +122,7 @@ const manifest = {
   repository: REPOSITORY,
   commit: SOURCE_COMMIT,
   seed,
-  selection: "50_per_dataset_v1",
+  selection: SELECTION,
   adapter_version: ADAPTER_VERSION,
   files: fileHashes,
   counts: Object.fromEntries(
@@ -126,7 +131,7 @@ const manifest = {
       {
         available: rows.length,
         eligible: rows.filter((r) => !exclusionReason(source, r)).length,
-        selected: 50,
+        selected: selection[source].length,
       },
     ]),
   ),
@@ -154,15 +159,15 @@ const demo = JSON.parse(
 );
 const config = StudySchema.parse({
   ...demo,
-  id: `clinical-150-${digest.slice(0, 8)}`,
+  id: `clinical-${cases.length}-${digest.slice(0, 8)}`,
   version: "1",
   title: "Clinical reasoning study",
   is_demo: false,
   cases_per_participant: 5,
   prolific_study_id: null,
   completion_code: null,
-  consent_text:
-    "This research study investigates clinical diagnostic reasoning. You will assess five cases, ask a simulated patient or request investigations in up to three rounds per case, and submit your diagnosis and confidence. Participation is voluntary. Study responses and interaction timing are recorded. Do not include information about your own patients.",
+  consent_version: PARTICIPANT_INFO_VERSION,
+  consent_text: CLINICIAN_CONSENT_TEXT,
   steps: [
     demo.steps[0],
     {
@@ -170,7 +175,7 @@ const config = StudySchema.parse({
       title: "Instructions",
       kind: "information",
       instructions:
-        "Use up to three question rounds per case, shared between the patient and the lab. The lab provides examination findings, laboratory measurements, imaging reports and available original images. You may submit your diagnosis earlier. Missing information is unknown, not normal.",
+        "For each patient case, ask the patient three questions, one at a time. You can ask about their history or request examination findings, tests or images. After the third answer, enter the single most likely diagnosis and rate your confidence from 1 to 7. After all patient cases, complete a short questionnaire. There is no time limit.",
     },
     demo.steps.at(-1),
   ],
@@ -179,7 +184,7 @@ const config = StudySchema.parse({
     repository: REPOSITORY,
     commit: SOURCE_COMMIT,
     seed,
-    selection: "50_per_dataset_v1",
+    selection: SELECTION,
     adapter_version: ADAPTER_VERSION,
     sha256: digest,
   },

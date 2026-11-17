@@ -8,6 +8,7 @@ import {
   DiagnosisSchema,
   DraftSchema,
   EventsSchema,
+  TimingSchema,
 } from "@clinical/shared";
 import { one, insert, now, type Database } from "../lib/db.js";
 import { owned } from "../lib/security.js";
@@ -21,6 +22,8 @@ import {
   getAttempt,
 } from "../domain/study.js";
 import { caseView, queueQuestion, diagnose } from "../domain/clinical.js";
+import { releasedMedia } from "../domain/lab.js";
+import { usesPatientFactIds } from "../domain/patient.js";
 export function sessionRoutes(db: Database, settings: Settings) {
   const app = new Hono();
   app.get("/:sessionId/cases/:stepId/media/:assetId", async (c) => {
@@ -37,11 +40,16 @@ export function sessionRoutes(db: Database, settings: Settings) {
     );
     const turns = (
       await db.query(
-        "SELECT tests FROM clinical_turns WHERE case_attempt_id=$1 AND target='lab' AND status='succeeded'",
+        "SELECT target,status,question,tests,metadata_json FROM clinical_turns WHERE case_attempt_id=$1 AND status='succeeded'",
         [a.id],
       )
     ).rows;
-    if (!media || !turns.some((t) => t.tests.includes(media.test)))
+    if (
+      !media ||
+      !turns.some((t) =>
+        releasedMedia(spec, t).some((m) => m.asset_id === media.asset_id),
+      )
+    )
       throw new HTTPException(404);
     const asset = await one(db, "SELECT * FROM case_media WHERE id=$1", [
       media.asset_id,
@@ -106,7 +114,7 @@ export function sessionRoutes(db: Database, settings: Settings) {
           body.answers.physician === false
         )
           throw new HTTPException(422, {
-            message: "This study is for qualified medical doctors",
+            message: "This study is for physicians and doctors in training",
           });
         if (
           (step.kind === "final_check") !==
@@ -226,6 +234,14 @@ export function sessionRoutes(db: Database, settings: Settings) {
         );
         if (lock.rowCount !== 1)
           throw new HTTPException(409, { message: "Case already submitted" });
+        if (
+          (body.diagnosis.trim() ||
+            body.diagnoses.some((item) => item.diagnosis)) &&
+          !(await caseView(tx, a, s)).can_diagnose
+        )
+          throw new HTTPException(409, {
+            message: "Complete all three rounds before entering diagnoses",
+          });
         const { revision, ...data } = body;
         const changed =
           revision === 0
@@ -254,6 +270,67 @@ export function sessionRoutes(db: Database, settings: Settings) {
           });
         }
         return { ...data, revision: revision + 1 };
+      }),
+    );
+  });
+  app.post("/:sessionId/timing", async (c) => {
+    const body = TimingSchema.parse(await c.req.json());
+    return c.json(
+      await db.tx(async (tx) => {
+        const s = await owned(
+          tx,
+          c.req.param("sessionId"),
+          c.req.header("Authorization"),
+          settings,
+        );
+        const visited = s.snapshot.steps.slice(0, s.step_index + 1);
+        const step = visited.find((x: any) => x.id === body.step_id);
+        const allowed =
+          !!step ||
+          body.step_id === "intro" ||
+          (body.step_id === "outro" && s.status === "completed");
+        if (
+          !allowed ||
+          (body.phase !== "page" && step?.kind !== "diagnosis") ||
+          (body.phase === "round" || body.phase === "response") !==
+            body.round_number > 0
+        )
+          throw new HTTPException(422, {
+            message: "Invalid timing stage or round",
+          });
+        const { elapsed_ms, active_ms } = body.duration;
+        await tx.query(
+          "INSERT INTO study_timings(id,session_id,step_id,phase,round_number,elapsed_ms,active_ms,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8) ON CONFLICT(id) DO NOTHING",
+          [
+            body.id,
+            s.id,
+            body.step_id,
+            body.phase,
+            body.round_number,
+            elapsed_ms,
+            active_ms,
+            now(),
+          ],
+        );
+        const prior = (await one(
+          tx,
+          "SELECT * FROM study_timings WHERE id=$1",
+          [body.id],
+        ))!;
+        if (
+          prior.session_id !== s.id ||
+          prior.step_id !== body.step_id ||
+          prior.phase !== body.phase ||
+          prior.round_number !== body.round_number
+        )
+          throw new HTTPException(409, {
+            message: "Timing record belongs to another visit",
+          });
+        await tx.query(
+          "UPDATE study_timings SET elapsed_ms=$1,active_ms=$2,updated_at=$3 WHERE id=$4 AND elapsed_ms<=$1 AND active_ms<=$2",
+          [elapsed_ms, active_ms, now(), body.id],
+        );
+        return { saved: true };
       }),
     );
   });
@@ -331,9 +408,11 @@ export function sessionRoutes(db: Database, settings: Settings) {
       [c.req.param("runId"), s.id],
     );
     if (!run) throw new HTTPException(404);
+    // The research export retains the model assignment for each run.
+    if (run.result) delete run.result.interviewer_model_id;
     const messages = (
       await db.query(
-        "SELECT sequence,role,content FROM messages WHERE run_id=$1 ORDER BY sequence",
+        "SELECT sequence,role,content,prompt_version FROM messages WHERE run_id=$1 ORDER BY sequence",
         [run.id],
       )
     ).rows;
@@ -342,7 +421,15 @@ export function sessionRoutes(db: Database, settings: Settings) {
       status: run.status,
       result: run.result,
       error_code: run.error_code,
-      messages,
+      messages: messages.map((message) => ({
+        sequence: message.sequence,
+        role: message.role,
+        content:
+          message.role === "patient" &&
+            usesPatientFactIds(message.prompt_version)
+            ? JSON.parse(message.content).answer
+            : message.content,
+      })),
     });
   });
   return app;
