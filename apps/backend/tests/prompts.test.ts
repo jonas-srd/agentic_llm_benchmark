@@ -10,7 +10,14 @@ import {
 import { patientRecord } from "../src/domain/facts.js";
 import { answerPatient, PATIENT_PROMPT } from "../src/domain/patient.js";
 import { PATIENT_PROMPT_V3 } from "../src/domain/patient-prompt-v3.js";
-import { runSimulation } from "../src/domain/agents.js";
+import {
+  runSimulation,
+  PROMPT_VERSION,
+  parseDoctorQuestion,
+  DOCTOR_TURN_INSTRUCTIONS,
+  DOCTOR_PROMPT_QUESTION_WORDS,
+  MAX_DOCTOR_QUESTION_WORDS,
+} from "../src/domain/agents.js";
 import { judgeDiagnoses } from "../src/domain/judge.js";
 import { Database } from "../src/lib/db.js";
 import { migrate } from "../src/lib/migrations.js";
@@ -124,39 +131,72 @@ test("patient uses supplied fact IDs, private record, exact unknown and first-qu
 
 test("replays the original physician interview prompt for a historical case", async () => {
   const version = "clinical-patient-fact-ids-v3";
-  const answer = await answerPatient(stub((messages) => {
-    assert.equal(messages[0].content, PATIENT_PROMPT_V3 + "\n" + JSON.stringify(patientRecord(spec).facts));
-    return JSON.stringify({ fact_ids: [], answer: "I'm not sure." });
-  }), spec, "Do you have siblings?", [], version);
+  const answer = await answerPatient(
+    stub((messages) => {
+      assert.equal(
+        messages[0].content,
+        PATIENT_PROMPT_V3 + "\n" + JSON.stringify(patientRecord(spec).facts),
+      );
+      return JSON.stringify({ fact_ids: [], answer: "I'm not sure." });
+    }),
+    spec,
+    "Do you have siblings?",
+    [],
+    version,
+  );
   assert.equal(answer.metadata.prompt_version, version);
 });
 
-test("live patient distinguishes visible changes, partial evidence and missing facts", {
-  skip: process.env.TEST_LIVE_PATIENT_PROMPT !== "1",
-}, async () => {
-  const provider = new OpenRouter(settingsFromEnv());
-  const c = CaseSchema.parse({
-    ...spec,
-    fact_pack: [
-      { id: "change", status: "recorded", text: "Physical examination: A flat pink spot on the patient's forearm gradually turned into a raised purple bump." },
-      { id: "timing", status: "recorded", text: "History: The patient started a new tablet two days before the spot appeared." },
-      { id: "skin", status: "recorded", text: "History: The patient has scalp flaking and uses a special shampoo." },
-      { id: "scan", status: "recorded", text: "Imaging: A plain X-ray of the forearm was ordered." },
-    ],
-  });
-  for (const [question, expected] of [
-    ["Has the spot changed in appearance?", ["change"]],
-    ["What caused the spot?", ["timing"]],
-    ["Do you ever get a rash on your scalp?", ["skin"]],
-    ["Is the spot painful?", []],
-    ["What did the CT scan show?", []],
-  ] as const) {
-    const reply = await answerPatient(provider, c, question, []);
-    assert.deepEqual(reply.metadata.patient_fact_ids, expected, question);
-    assert.equal(reply.response === "I'm not sure.", expected.length === 0, question);
-    assert.deepEqual(reply.metadata.released_image_ids, []);
-  }
-});
+test(
+  "live patient distinguishes visible changes, partial evidence and missing facts",
+  {
+    skip: process.env.TEST_LIVE_PATIENT_PROMPT !== "1",
+  },
+  async () => {
+    const provider = new OpenRouter(settingsFromEnv());
+    const c = CaseSchema.parse({
+      ...spec,
+      fact_pack: [
+        {
+          id: "change",
+          status: "recorded",
+          text: "Physical examination: A flat pink spot on the patient's forearm gradually turned into a raised purple bump.",
+        },
+        {
+          id: "timing",
+          status: "recorded",
+          text: "History: The patient started a new tablet two days before the spot appeared.",
+        },
+        {
+          id: "skin",
+          status: "recorded",
+          text: "History: The patient has scalp flaking and uses a special shampoo.",
+        },
+        {
+          id: "scan",
+          status: "recorded",
+          text: "Imaging: A plain X-ray of the forearm was ordered.",
+        },
+      ],
+    });
+    for (const [question, expected] of [
+      ["Has the spot changed in appearance?", ["change"]],
+      ["What caused the spot?", ["timing"]],
+      ["Do you ever get a rash on your scalp?", ["skin"]],
+      ["Is the spot painful?", []],
+      ["What did the CT scan show?", []],
+    ] as const) {
+      const reply = await answerPatient(provider, c, question, []);
+      assert.deepEqual(reply.metadata.patient_fact_ids, expected, question);
+      assert.equal(
+        reply.response === "I'm not sure.",
+        expected.length === 0,
+        question,
+      );
+      assert.deepEqual(reply.metadata.released_image_ids, []);
+    }
+  },
+);
 
 test("judge calls once per named rank including 0%, omits confidence/context and rejects malformed verdicts", async () => {
   let calls = 0,
@@ -228,7 +268,11 @@ test("LLM doctor receives the same released image and caption as a physician thr
   await saveAsset(db, asset);
   const imageCase = CaseSchema.parse({
     ...spec,
-    labs: { ...spec.labs, Scan: "Image available.", "Other scan": "Image available." },
+    labs: {
+      ...spec.labs,
+      Scan: "Image available.",
+      "Other scan": "Image available.",
+    },
     media: [
       { asset_id, test: "Scan", caption: "Figure A" },
       {
@@ -285,13 +329,19 @@ test("LLM doctor receives the same released image and caption as a physician thr
       roles.push(role);
       if (role === "patient" && patients === 2) {
         const metadata = JSON.parse(reply.content).metadata;
-        for (const version of [metadata.prompt_version, "clinical-patient-fact-ids-v3"]) {
+        for (const version of [
+          metadata.prompt_version,
+          "clinical-patient-fact-ids-v3",
+        ]) {
           const media = releasedMedia(imageCase, {
             question: "May I see the scan?",
             status: "succeeded",
             metadata_json: { ...metadata, prompt_version: version },
           });
-          assert.deepEqual(media.map((m) => m.asset_id), [asset.id]);
+          assert.deepEqual(
+            media.map((m) => m.asset_id),
+            [asset.id],
+          );
         }
       }
     },
@@ -340,6 +390,148 @@ test("LLM doctor receives the same released image and caption as a physician thr
     );
     assert.equal(turns, earlyRound);
   }
+});
+
+test("doctor prompt requests 10 words while the hard cap accepts 15 and keeps the final diagnosis separate", async () => {
+  assert.equal(DOCTOR_PROMPT_QUESTION_WORDS, 10);
+  assert.equal(MAX_DOCTOR_QUESTION_WORDS, 15);
+  const db = new Database("sqlite:///:memory:");
+  const question =
+    "When did the pain start and how has it changed since you first noticed it?";
+  const finalDiagnosis =
+    "A final clinical diagnosis supported by the history and examination findings with more than fifteen words";
+  const sentQuestions = [
+    question,
+    "  " + question.replaceAll(" ", "\t\n\u00a0") + "  ",
+    "What's changed about this well-defined pain since yesterday and what makes it better or worse?",
+  ];
+  let doctorCalls = 0;
+  let patientCalls = 0;
+  const recordedVersions: string[] = [];
+  try {
+    const result = await runSimulation(
+      db,
+      spec,
+      "anthropic/claude-sonnet-5.5",
+      stub((messages, model) => {
+        if (model === "anthropic/claude-sonnet-5.5") {
+          assert.match(messages[0].content, /at most 10 words long/);
+          assert.match(messages[0].content, /Ask only closed-ended questions/);
+          assert.equal(
+            messages.at(-1)?.content,
+            DOCTOR_TURN_INSTRUCTIONS[doctorCalls],
+          );
+          return JSON.stringify(
+            doctorCalls < 3
+              ? { question: sentQuestions[doctorCalls++] }
+              : { diagnoses: [{ diagnosis: finalDiagnosis, confidence: 4 }] },
+          );
+        }
+        const input = JSON.parse(messages[1].content);
+        assert.equal(input.question, sentQuestions[patientCalls].trim());
+        assert.equal(input.previous_questions.length, patientCalls++);
+        return JSON.stringify({ fact_ids: [], answer: "I'm not sure." });
+      }),
+      async (role, _reply, version) => {
+        if (role === "doctor") recordedVersions.push(version);
+      },
+      async () => {},
+    );
+    assert.equal(patientCalls, 3);
+    assert.equal(result.questions_used, 3);
+    assert.equal(result.diagnoses[0].diagnosis, finalDiagnosis);
+    assert.equal(result.protocol_version, PROMPT_VERSION);
+    assert.deepEqual(recordedVersions, Array(4).fill(PROMPT_VERSION));
+  } finally {
+    await db.close();
+  }
+});
+
+test("overlong doctor questions are truncated in every round and the interview completes", async () => {
+  const db = new Database("sqlite:///:memory:");
+  const tooLong =
+    "When did your current pain start and how has it changed since you first noticed it?";
+  const truncated =
+    "When did your current pain start and how has it changed since you first noticed";
+  try {
+    for (const shortenedRound of [1, 2, 3]) {
+      let doctorCalls = 0;
+      let patientCalls = 0;
+      const recordedQuestions: string[] = [];
+      const expectedQuestions = [1, 2, 3].map((round) =>
+        round === shortenedRound ? truncated : "Any pain?",
+      );
+      const result = await runSimulation(
+        db,
+        spec,
+        "anthropic/claude-sonnet-5.5",
+        stub((messages, model) => {
+          if (model === "anthropic/claude-sonnet-5.5") {
+            const history = messages
+              .filter((m) => m.role === "assistant")
+              .map((m) => JSON.parse(m.content).question);
+            assert.deepEqual(history, expectedQuestions.slice(0, doctorCalls));
+            doctorCalls++;
+            return JSON.stringify(
+              doctorCalls <= 3
+                ? {
+                    question:
+                      doctorCalls === shortenedRound ? tooLong : "Any pain?",
+                  }
+                : { diagnoses: [{ diagnosis: "Assessment", confidence: 4 }] },
+            );
+          }
+          const input = JSON.parse(messages[1].content);
+          assert.equal(input.question, expectedQuestions[patientCalls]);
+          assert.deepEqual(
+            input.previous_questions.map(
+              (q: { question: string }) => q.question,
+            ),
+            expectedQuestions.slice(0, patientCalls),
+          );
+          patientCalls++;
+          return JSON.stringify({ fact_ids: [], answer: "I'm not sure." });
+        }),
+        async (role, reply) => {
+          if (role === "doctor" && doctorCalls <= 3) {
+            recordedQuestions.push(JSON.parse(reply.content).question);
+            assert.equal(
+              parseDoctorQuestion(reply.content),
+              expectedQuestions[doctorCalls - 1],
+            );
+          }
+        },
+        async () => {},
+      );
+      assert.equal(doctorCalls, 4);
+      assert.equal(patientCalls, 3);
+      assert.equal(result.questions_used, 3);
+      assert.equal(result.diagnoses[0].diagnosis, "Assessment");
+      assert.equal(recordedQuestions[shortenedRound - 1], tooLong);
+    }
+  } finally {
+    await db.close();
+  }
+});
+
+test("doctor truncation preserves whitespace and punctuation and handles long, fenced output", () => {
+  const firstFifteen =
+    "What's changed about this well-defined pain since yesterday and what makes it better or worse?";
+  const mixed = firstFifteen.replaceAll(" ", "\t\n\u00a0");
+  for (const content of [
+    JSON.stringify({ question: "  " + mixed + " ADDITIONAL INFORMATION  " }),
+    [
+      "```json",
+      JSON.stringify({ question: mixed + " additional".repeat(1000) }),
+      "```",
+    ].join("\n"),
+  ]) {
+    assert.equal(parseDoctorQuestion(content), mixed);
+  }
+  assert.equal(
+    parseDoctorQuestion(JSON.stringify({ question: " Any pain? " })),
+    "Any pain?",
+  );
 });
 
 test("LLM output requires exactly one diagnosis with the physician confidence scale", () => {

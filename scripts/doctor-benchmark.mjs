@@ -1,4 +1,4 @@
-// node --env-file=.env --import tsx scripts/doctor-benchmark.mjs INPUT.sqlite OUTPUT.sqlite [pilot|run|repair|verify]
+// node --env-file=.env --import tsx scripts/doctor-benchmark.mjs INPUT.sqlite OUTPUT.sqlite [prepare|pilot|run|repair|verify] [all|comma-separated-model-ids] [ablation-manifest.json]
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, constants } from "node:fs";
@@ -8,8 +8,16 @@ import {
   runSimulation,
   PROMPT_VERSION,
   DOCTOR,
+  DOCTOR_TURN_INSTRUCTIONS,
+  DOCTOR_PROMPT_QUESTION_WORDS,
+  MAX_DOCTOR_QUESTION_WORDS,
+  parseDoctorQuestion,
 } from "../apps/backend/src/domain/agents.ts";
-import { patientRecord } from "../apps/backend/src/domain/facts.ts";
+import {
+  patientRecord,
+  planFactAblation,
+  selectPatientFacts,
+} from "../apps/backend/src/domain/facts.ts";
 import {
   PATIENT_CHAT_VERSION,
   PATIENT_PROMPT,
@@ -28,25 +36,55 @@ import {
 } from "../apps/backend/src/lib/openrouter.ts";
 import { settingsFromEnv } from "../apps/backend/src/lib/config.ts";
 
-const models = [
+const defaultModels = [
   "openai/gpt-6.1-sol",
   "anthropic/claude-fable-5.2",
+  "mistralai/mistral-large-4-0",
   "moonshotai/kimi-k3.1-pro",
 ];
+const [input, output, mode = "run", selectedModels, ablationPath] =
+  process.argv.slice(2);
+const models =
+  selectedModels && selectedModels !== "all"
+    ? selectedModels.split(",")
+    : defaultModels;
+const ablation = ablationPath
+  ? JSON.parse(readFileSync(ablationPath, "utf8"))
+  : null;
+if (ablation)
+  assert(
+    ablation.version === "nested-fact-id-ablation-v1" &&
+      [25, 50].includes(ablation.removal_percent) &&
+      ablation.scope === "nonopening_facts_including_image_facts",
+  );
+const conditionId = ablation?.condition_id ?? "complete_facts";
+const retainedByCase = new Map();
+const allowedModels = new Set(defaultModels);
+assert(
+  models.length > 0 &&
+    new Set(models).size === models.length &&
+    models.every((m) => allowedModels.has(m)),
+  "Select supported, unique doctor models",
+);
 const replicates = [1, 2, 3];
 const doctorTokenLimit = 32768;
 const concurrency = Number(process.env.DOCTOR_BENCHMARK_CONCURRENCY ?? 96);
 assert(Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 96);
 const doctorSampling = (model) => ({
-  reasoning: { effort: "max" },
-  ...(model === "moonshotai/kimi-k3.1-pro" ? { temperature: 1 } : {}),
+  reasoning: {
+    effort: model === "mistralai/mistral-large-4-0" ? "high" : "max",
+  },
+  ...(["moonshotai/kimi-k3.1-pro", "mistralai/mistral-large-4-0"].includes(
+    model,
+  )
+    ? { temperature: 1 }
+    : {}),
 });
-const [input, output, mode = "run"] = process.argv.slice(2);
 assert(
   input &&
     output &&
     resolve(input) !== resolve(output) &&
-    ["run", "pilot", "repair", "verify"].includes(mode),
+    ["prepare", "run", "pilot", "repair", "verify"].includes(mode),
   "Supply separate input and output databases and a known operation",
 );
 const sha = (value) => createHash("sha256").update(value).digest("hex");
@@ -82,13 +120,17 @@ if (db.prepare("select 1 from sqlite_master where name='llm_runs'").get())
     db
       .prepare("pragma table_info(llm_runs)")
       .all()
-      .some((c) => c.name === "replicate"),
-    "Use a fresh output for the replicated benchmark",
+      .some((c) => c.name === "condition_id"),
+    "Use a fresh output for the condition-aware benchmark",
   );
 db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=20000;
 CREATE TABLE IF NOT EXISTS llm_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS llm_conditions(condition_id TEXT PRIMARY KEY,removal_percent INTEGER NOT NULL,seed TEXT,specification_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS llm_case_fact_sets(condition_id TEXT REFERENCES llm_conditions,case_id TEXT,original_sha256 TEXT NOT NULL,effective_sha256 TEXT NOT NULL,total_fact_count INTEGER,protected_fact_count INTEGER,eligible_fact_count INTEGER,removed_fact_count INTEGER,actual_removed_fraction REAL,retained_fact_ids_json TEXT,removed_fact_ids_json TEXT,protected_fact_ids_json TEXT,PRIMARY KEY(condition_id,case_id));
+CREATE TABLE IF NOT EXISTS llm_case_fact_masks(condition_id TEXT,case_id TEXT,fact_id TEXT,fact_ordinal INTEGER,status TEXT,fact_text TEXT,is_protected INTEGER,is_retained INTEGER,image_asset_ids_json TEXT,PRIMARY KEY(condition_id,case_id,fact_id),FOREIGN KEY(condition_id,case_id) REFERENCES llm_case_fact_sets(condition_id,case_id));
+CREATE TABLE IF NOT EXISTS llm_prompts(prompt_version TEXT PRIMARY KEY,system_prompt TEXT NOT NULL,turn_instructions_json TEXT NOT NULL,prompt_question_words INTEGER,hard_cap_words INTEGER,word_count_rule TEXT NOT NULL,overflow_policy TEXT NOT NULL,system_prompt_sha256 TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS llm_provider_errors(run_id INTEGER REFERENCES llm_runs, failed_at_unix REAL, error TEXT, PRIMARY KEY(run_id,failed_at_unix));
-CREATE TABLE IF NOT EXISTS llm_runs(run_id INTEGER PRIMARY KEY,case_id TEXT NOT NULL,patient_prompt_version TEXT NOT NULL,doctor_model TEXT NOT NULL,replicate INTEGER NOT NULL CHECK(replicate BETWEEN 1 AND 3),doctor_reasoning_effort TEXT NOT NULL,temperature_target REAL NOT NULL,temperature_sent REAL, fact_pack_sha256 TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', error TEXT, diagnosis TEXT, confidence INTEGER CHECK(confidence BETWEEN 1 AND 7), confidence_scale TEXT, judge_verdict TEXT,started_at_unix REAL,finished_at_unix REAL, UNIQUE(case_id,doctor_model,replicate));
+CREATE TABLE IF NOT EXISTS llm_runs(run_id INTEGER PRIMARY KEY,case_id TEXT NOT NULL,patient_prompt_version TEXT NOT NULL,doctor_model TEXT NOT NULL,replicate INTEGER NOT NULL CHECK(replicate BETWEEN 1 AND 3),doctor_reasoning_effort TEXT NOT NULL,temperature_target REAL NOT NULL,temperature_sent REAL, fact_pack_sha256 TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', error TEXT, diagnosis TEXT, confidence INTEGER CHECK(confidence BETWEEN 1 AND 7), confidence_scale TEXT, judge_verdict TEXT,started_at_unix REAL,finished_at_unix REAL,doctor_prompt_version TEXT NOT NULL REFERENCES llm_prompts(prompt_version),doctor_prompt_question_words INTEGER,doctor_max_question_words INTEGER,condition_id TEXT NOT NULL REFERENCES llm_conditions,original_fact_pack_sha256 TEXT NOT NULL, UNIQUE(case_id,doctor_model,replicate,doctor_prompt_version,condition_id));
 CREATE TABLE IF NOT EXISTS llm_case_links(run_id INTEGER REFERENCES llm_runs,case_attempt_id TEXT REFERENCES case_attempts,PRIMARY KEY(run_id,case_attempt_id));
 CREATE TABLE IF NOT EXISTS llm_calls(run_id INTEGER REFERENCES llm_runs,sequence INTEGER,role TEXT NOT NULL,model TEXT NOT NULL,request_sha256 TEXT NOT NULL,response_json TEXT NOT NULL,started_at_unix REAL,finished_at_unix REAL,PRIMARY KEY(run_id,sequence));
 CREATE TABLE IF NOT EXISTS llm_rounds(run_id INTEGER REFERENCES llm_runs,round_number INTEGER,doctor_question TEXT NOT NULL,patient_answer TEXT NOT NULL,fact_ids_json TEXT NOT NULL,released_image_ids_json TEXT NOT NULL,PRIMARY KEY(run_id,round_number));
@@ -97,7 +139,7 @@ CREATE VIEW IF NOT EXISTS llm_response_images AS
 SELECT r.run_id,r.round_number,i.value AS image_id FROM llm_rounds r,json_each(r.released_image_ids_json) i;
 CREATE VIEW IF NOT EXISTS llm_case_results AS SELECT r.*,SUM(CAST(json_extract(c.response_json,'$.usage.cost') AS REAL)) AS reported_cost_usd FROM llm_runs r LEFT JOIN llm_calls c USING(run_id) GROUP BY r.run_id;
 CREATE VIEW IF NOT EXISTS llm_round_results AS
-SELECT r.case_id,r.doctor_model,r.replicate,r.patient_prompt_version,x.*,
+SELECT r.case_id,r.doctor_model,r.replicate,r.patient_prompt_version,r.doctor_prompt_version,r.doctor_prompt_question_words,r.doctor_max_question_words,r.condition_id,x.*,
        d.started_at_unix AS question_started_at_unix,d.finished_at_unix AS question_ready_at_unix,
        CAST(ROUND((d.finished_at_unix-d.started_at_unix)*1000) AS INTEGER) AS question_generation_ms,
        p.started_at_unix AS patient_started_at_unix,p.finished_at_unix AS answer_ready_at_unix,
@@ -108,7 +150,7 @@ JOIN llm_calls p ON p.run_id=x.run_id AND p.sequence=2*(x.round_number-1)+1;
 CREATE VIEW IF NOT EXISTS physician_llm_comparison AS
 SELECT s.session_type,s.included_in_main_analysis,h.session_id,h.case_attempt_id,h.case_id,
        h.dataset,h.reference_diagnosis,h.physician_diagnosis,h.confidence AS physician_confidence,h.judge_verdict AS physician_verdict,
-       r.run_id,r.doctor_model,r.replicate,r.patient_prompt_version,r.status AS llm_status,
+       r.run_id,r.doctor_model,r.replicate,r.patient_prompt_version,r.doctor_prompt_version,r.doctor_prompt_question_words,r.doctor_max_question_words,r.condition_id,r.status AS llm_status,
        r.diagnosis AS llm_diagnosis,r.confidence AS llm_confidence,r.judge_verdict AS llm_verdict
 FROM llm_case_links l JOIN case_attempts h USING(case_attempt_id) JOIN sessions s USING(session_id)
 JOIN llm_runs r ON r.run_id=l.run_id;`);
@@ -122,10 +164,76 @@ function meta(k, v) {
 db.exec("begin immediate");
 try {
   meta("human_export_sha256", inputHash);
+  meta("condition_id", conditionId);
+  const conditionSpec = ablation ?? {
+    version: "complete-facts-v1",
+    removal_percent: 0,
+  };
+  const conditionRow = [
+    conditionId,
+    ablation?.removal_percent ?? 0,
+    ablation?.seed ?? null,
+    JSON.stringify(conditionSpec),
+  ];
+  db.prepare("insert or ignore into llm_conditions values(?,?,?,?)").run(
+    ...conditionRow,
+  );
+  assert.deepEqual(
+    Object.values(
+      db
+        .prepare("select * from llm_conditions where condition_id=?")
+        .get(conditionId),
+    ),
+    conditionRow,
+  );
+  if (ablation) {
+    assert.equal(ablation.human_export_sha256, inputHash);
+    assert.equal(ablation.doctor_prompt_version, PROMPT_VERSION);
+    meta("ablation_manifest_sha256", sha(readFileSync(ablationPath)));
+  }
   meta("doctor_models", JSON.stringify(models));
   meta("patient_model", SUPPORT_MODEL);
   meta("judge_model", SUPPORT_MODEL);
   meta("doctor_prompt_version", PROMPT_VERSION);
+  meta("doctor_question_style", "closed_ended_only");
+  meta(
+    "doctor_question_style_policy",
+    "The system prompt and all three question-turn instructions require closed-ended questions: yes/no or a choice between explicitly stated alternatives. Requests for descriptions, explanations or narratives are prohibited; leading questions must be avoided. Question style is not automatically classified, rewritten or retried.",
+  );
+  meta("doctor_prompt_question_words", String(DOCTOR_PROMPT_QUESTION_WORDS));
+  meta("doctor_max_question_words", String(MAX_DOCTOR_QUESTION_WORDS));
+  meta("doctor_question_hard_cap_words", String(MAX_DOCTOR_QUESTION_WORDS));
+  meta("doctor_turn_instructions", JSON.stringify(DOCTOR_TURN_INSTRUCTIONS));
+  meta("doctor_system_prompt_sha256", sha(DOCTOR));
+  meta(
+    "doctor_question_word_count",
+    "Whitespace-separated words after trimming. Contractions and hyphenated terms count as one word.",
+  );
+  meta(
+    "doctor_question_limit_policy",
+    `Preserve the original output in llm_calls. The prompt requests at most ${DOCTOR_PROMPT_QUESTION_WORDS} words; the hard cap is ${MAX_DOCTOR_QUESTION_WORDS}. Truncate only after word ${MAX_DOCTOR_QUESTION_WORDS}. Send and store the truncated question in llm_rounds and both conversation histories. Continue the interview.`,
+  );
+  const promptRow = [
+    PROMPT_VERSION,
+    DOCTOR,
+    JSON.stringify(DOCTOR_TURN_INSTRUCTIONS),
+    DOCTOR_PROMPT_QUESTION_WORDS,
+    MAX_DOCTOR_QUESTION_WORDS,
+    "Whitespace-separated words after trimming. Contractions and hyphenated terms count as one word.",
+    "truncate_after_hard_cap",
+    sha(DOCTOR),
+  ];
+  db.prepare("insert or ignore into llm_prompts values(?,?,?,?,?,?,?,?)").run(
+    ...promptRow,
+  );
+  assert.deepEqual(
+    Object.values(
+      db
+        .prepare("select * from llm_prompts where prompt_version=?")
+        .get(PROMPT_VERSION),
+    ),
+    promptRow,
+  );
   meta("judge_prompt_version", JUDGE_PROMPT_VERSION);
   meta(PROMPT_VERSION, DOCTOR);
   meta(JUDGE_PROMPT_VERSION, JUDGE_PROMPT);
@@ -140,7 +248,7 @@ try {
   );
   meta(
     "doctor_temperature_policy",
-    "Target 1.0. Kimi sends 1 explicitly. For GPT and Claude the temperature field is omitted to use the API default. No effective sampling temperature is returned.",
+    "Target 1.0. Kimi and Mistral send 1 explicitly. For GPT and Claude the temperature field is omitted to use the API default. No effective sampling temperature is returned.",
   );
   meta("patient_and_judge_max_output_tokens", String(cfg.maxTokens));
   meta(
@@ -179,6 +287,91 @@ try {
       .all(a.case_attempt_id)
       .filter((f) => !imageIds.has(f.id));
     assert.equal(patientRecord(c).sha256, a.fact_pack_sha256);
+    const fullRecord = patientRecord(c);
+    const planned = ablation
+      ? planFactAblation(
+          fullRecord,
+          c.id,
+          ablation.seed,
+          ablation.removal_percent,
+        )
+      : {
+          protectedIds: fullRecord.facts
+            .filter((f) => f.text.startsWith("Initial presentation:"))
+            .map((f) => f.id),
+          eligibleCount: fullRecord.facts.filter(
+            (f) => !f.text.startsWith("Initial presentation:"),
+          ).length,
+          removedIds: [],
+          retainedIds: fullRecord.facts.map((f) => f.id),
+          actualRemovedFraction: 0,
+          originalSha256: fullRecord.sha256,
+          effectiveSha256: fullRecord.sha256,
+        };
+    if (ablation)
+      assert.deepEqual(ablation.cases[c.id], {
+        ...planned,
+        patient_prompt_version: a.prompt_version,
+        opening_sha256: sha(c.opening),
+      });
+    retainedByCase.set(c.id, planned.retainedIds);
+    assert.equal(
+      selectPatientFacts(fullRecord, planned.retainedIds).sha256,
+      planned.effectiveSha256,
+    );
+    const factSet = [
+      conditionId,
+      c.id,
+      planned.originalSha256,
+      planned.effectiveSha256,
+      fullRecord.facts.length,
+      planned.protectedIds.length,
+      planned.eligibleCount,
+      planned.removedIds.length,
+      planned.actualRemovedFraction,
+      JSON.stringify(planned.retainedIds),
+      JSON.stringify(planned.removedIds),
+      JSON.stringify(planned.protectedIds),
+    ];
+    db.prepare(
+      "insert or ignore into llm_case_fact_sets values(?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(...factSet);
+    assert.deepEqual(
+      Object.values(
+        db
+          .prepare(
+            "select * from llm_case_fact_sets where condition_id=? and case_id=?",
+          )
+          .get(conditionId, c.id),
+      ),
+      factSet,
+    );
+    fullRecord.facts.forEach((f, ordinal) => {
+      const values = [
+        conditionId,
+        c.id,
+        f.id,
+        ordinal,
+        f.status,
+        f.text,
+        Number(planned.protectedIds.includes(f.id)),
+        Number(planned.retainedIds.includes(f.id)),
+        JSON.stringify(fullRecord.imageIds.get(f.id) || []),
+      ];
+      db.prepare(
+        "insert or ignore into llm_case_fact_masks values(?,?,?,?,?,?,?,?,?)",
+      ).run(...values);
+      assert.deepEqual(
+        Object.values(
+          db
+            .prepare(
+              "select * from llm_case_fact_masks where condition_id=? and case_id=? and fact_id=?",
+            )
+            .get(conditionId, c.id, f.id),
+        ),
+        values,
+      );
+    });
     assert.equal(a.n, 3);
     assert(usesPatientFactIds(a.prompt_version));
     for (const image of c.media || [])
@@ -189,21 +382,34 @@ try {
     for (const model of models) {
       for (const replicate of replicates) {
         db.prepare(
-          "insert or ignore into llm_runs(case_id,patient_prompt_version,doctor_model,replicate,doctor_reasoning_effort,temperature_target,temperature_sent,fact_pack_sha256) values(?,?,?,?,'max',1,?,?)",
+          "insert or ignore into llm_runs(case_id,patient_prompt_version,doctor_model,replicate,doctor_reasoning_effort,temperature_target,temperature_sent,fact_pack_sha256,doctor_prompt_version,doctor_prompt_question_words,doctor_max_question_words,condition_id,original_fact_pack_sha256) values(?,?,?,?,?,1,?,?,?,?,?,?,?)",
         ).run(
           c.id,
           a.prompt_version,
           model,
           replicate,
+          doctorSampling(model).reasoning.effort,
           doctorSampling(model).temperature ?? null,
+          planned.effectiveSha256,
+          PROMPT_VERSION,
+          DOCTOR_PROMPT_QUESTION_WORDS,
+          MAX_DOCTOR_QUESTION_WORDS,
+          conditionId,
           a.fact_pack_sha256,
         );
         const matching = db
           .prepare(
-            "select run_id,fact_pack_sha256 from llm_runs where case_id=? and patient_prompt_version=? and doctor_model=? and replicate=?",
+            "select run_id,fact_pack_sha256 from llm_runs where case_id=? and patient_prompt_version=? and doctor_model=? and replicate=? and doctor_prompt_version=? and condition_id=?",
           )
-          .get(c.id, a.prompt_version, model, replicate);
-        assert.equal(matching.fact_pack_sha256, a.fact_pack_sha256);
+          .get(
+            c.id,
+            a.prompt_version,
+            model,
+            replicate,
+            PROMPT_VERSION,
+            conditionId,
+          );
+        assert.equal(matching.fact_pack_sha256, planned.effectiveSha256);
         db.prepare("insert or ignore into llm_case_links values(?,?)").run(
           matching.run_id,
           a.case_attempt_id,
@@ -221,7 +427,11 @@ const doctors = new Map(
   models.map((model) => [
     model,
     new OpenRouter(
-      { ...cfg, maxTokens: doctorTokenLimit, llmTimeout: mode === "repair" ? 900000 : 300000 },
+      {
+        ...cfg,
+        maxTokens: doctorTokenLimit,
+        llmTimeout: mode === "repair" ? 900000 : 300000,
+      },
       fetch,
       [model],
       doctorSampling(model),
@@ -230,6 +440,7 @@ const doctors = new Map(
 );
 const badConfig = new Set();
 let accountError = null;
+let networkResumeAt = 0;
 const picked = new Set();
 const counts = db.prepare(
   "select doctor_model,status,count(*) n from llm_runs group by doctor_model,status order by doctor_model,status",
@@ -304,6 +515,7 @@ async function doRun(r) {
   };
   try {
     const c = cases.get(r.case_id);
+    assert(!ablation || retainedByCase.has(r.case_id), "Missing ablation mask");
     const result = await runSimulation(
       media,
       c,
@@ -312,10 +524,7 @@ async function doRun(r) {
       async (who, reply) => {
         if (who === "doctor") {
           if (round < 3) {
-            const s = reply.content
-              .trim()
-              .replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/gi, "");
-            question = JSON.parse(s).question;
+            question = parseDoctorQuestion(reply.content);
           }
         } else {
           const p = JSON.parse(reply.content);
@@ -333,6 +542,7 @@ async function doRun(r) {
       },
       async () => {},
       r.patient_prompt_version,
+      ablation ? retainedByCase.get(r.case_id) : undefined,
     );
     assert.equal(round, 3);
     const { diagnosis, confidence } = result.diagnoses[0];
@@ -372,6 +582,10 @@ async function doRun(r) {
     console.warn(
       JSON.stringify({ run: r.run_id, model: r.doctor_model, role, problem }),
     );
+    // Stop claiming fresh interviews during a connection outage. Already failed
+    // calls remain recorded for an explicit cached-response repair pass.
+    if (problem === "openrouter_network_or_response_error")
+      networkResumeAt = Math.max(networkResumeAt, seconds() + 30);
     if (["openrouter_http_401", "openrouter_http_402"].includes(problem))
       accountError = problem;
     // Keep an individual forbidden request as a terminal failure. Other case requests
@@ -384,6 +598,10 @@ async function doRun(r) {
 }
 async function worker() {
   while (!accountError) {
+    if (seconds() < networkResumeAt) {
+      await pause(Math.ceil((networkResumeAt - seconds()) * 1000));
+      continue;
+    }
     const pending = db
       .prepare("select * from llm_runs where status='queued' order by run_id")
       .all();
@@ -434,12 +652,45 @@ try {
       throw error;
     }
   }
-  if (mode !== "verify") {
+  if (!["verify", "prepare"].includes(mode)) {
     await Promise.all(
-      Array.from({ length: mode === "pilot" ? 3 : concurrency }, worker),
+      Array.from(
+        { length: mode === "pilot" ? models.length : concurrency },
+        worker,
+      ),
     );
   }
   if (mode === "verify") {
+    assert.equal(
+      db
+        .prepare("select count(*) n from llm_runs where condition_id<>?")
+        .get(conditionId).n,
+      0,
+    );
+    assert.equal(
+      db
+        .prepare(
+          "select count(*) n from llm_runs r join llm_case_fact_sets f using(condition_id,case_id) where r.fact_pack_sha256<>f.effective_sha256 or r.original_fact_pack_sha256<>f.original_sha256",
+        )
+        .get().n,
+      0,
+    );
+    assert.equal(
+      db
+        .prepare(
+          "select count(*) n from llm_rounds x join llm_runs r using(run_id),json_each(x.fact_ids_json) j where not exists(select 1 from llm_case_fact_masks f where f.condition_id=r.condition_id and f.case_id=r.case_id and f.fact_id=j.value and f.is_retained=1)",
+        )
+        .get().n,
+      0,
+    );
+    assert.equal(
+      db
+        .prepare(
+          "select count(*) n from llm_rounds x join llm_runs r using(run_id),json_each(x.released_image_ids_json) j where not exists(select 1 from llm_case_fact_masks f,json_each(f.image_asset_ids_json) a where f.condition_id=r.condition_id and f.case_id=r.case_id and f.is_retained=1 and a.value=j.value)",
+        )
+        .get().n,
+      0,
+    );
     const caseCount = db
       .prepare("select count(distinct case_id) as n from case_attempts")
       .get().n;
@@ -464,8 +715,7 @@ try {
       not exists(select 1 from llm_case_links l where l.run_id=r.run_id) or
       started_at_unix is null or finished_at_unix is null or
       (status<>'completed' and error is null) or
-      doctor_reasoning_effort<>'max' or temperature_target<>1 or
-      temperature_sent is not (case when doctor_model='moonshotai/kimi-k3.1-pro' then 1 end)`,
+      temperature_target<>1`,
         )
         .get().n,
       0,
@@ -475,13 +725,43 @@ try {
         .prepare(
           `select count(*) n from llm_calls c join llm_runs r using(run_id)
       where json_extract(response_json,'$.returned_model') is not model or
-      (role='doctor' and (model<>doctor_model or json_extract(response_json,'$.request_sampling.reasoning.effort') is not 'max'
+      (role='doctor' and (model<>doctor_model or json_extract(response_json,'$.request_sampling.reasoning.effort') is not doctor_reasoning_effort
         or json_extract(response_json,'$.request_sampling.temperature') is not temperature_sent))
       or (role<>'doctor' and json_extract(response_json,'$.request_sampling') is not '{}')`,
         )
         .get().n,
       0,
     );
+    for (const row of db
+      .prepare(
+        "select doctor_model,doctor_reasoning_effort,temperature_sent,doctor_prompt_version,doctor_prompt_question_words,doctor_max_question_words from llm_runs",
+      )
+      .all()) {
+      assert(models.includes(row.doctor_model));
+      const expected = doctorSampling(row.doctor_model);
+      assert.equal(row.doctor_reasoning_effort, expected.reasoning.effort);
+      assert.equal(row.temperature_sent, expected.temperature ?? null);
+      assert.equal(row.doctor_prompt_version, PROMPT_VERSION);
+      assert.equal(
+        row.doctor_prompt_question_words,
+        DOCTOR_PROMPT_QUESTION_WORDS,
+      );
+      assert.equal(row.doctor_max_question_words, MAX_DOCTOR_QUESTION_WORDS);
+    }
+    for (const row of db
+      .prepare(
+        "select x.doctor_question,c.response_json from llm_rounds x join llm_calls c on c.run_id=x.run_id and c.sequence=2*(x.round_number-1)",
+      )
+      .all()) {
+      assert.equal(
+        row.doctor_question,
+        parseDoctorQuestion(JSON.parse(row.response_json).content),
+      );
+      assert(
+        row.doctor_question.trim().split(/\s+/u).length <=
+          MAX_DOCTOR_QUESTION_WORDS,
+      );
+    }
     assert.equal(
       db
         .prepare(

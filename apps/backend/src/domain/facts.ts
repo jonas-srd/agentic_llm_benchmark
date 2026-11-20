@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import {
   FactPackSchema,
   type CaseSpec,
@@ -59,5 +59,69 @@ export function patientRecord(c: CaseSpec) {
     facts,
     imageIds,
     sha256: createHash("sha256").update(JSON.stringify(facts)).digest("hex"),
+  };
+}
+
+export type PatientRecord = ReturnType<typeof patientRecord>;
+
+// Filter the finished record, including generated image facts, without renaming IDs.
+// This also removes image permissions; the original case object is never mutated.
+export function selectPatientFacts(
+  record: PatientRecord,
+  retainedIds: readonly string[],
+): PatientRecord {
+  const retained = new Set(retainedIds);
+  if (
+    retained.size !== retainedIds.length ||
+    retainedIds.some((id) => !record.facts.some((fact) => fact.id === id))
+  )
+    throw new Error("invalid_retained_fact_ids");
+  const facts = record.facts.filter((fact) => retained.has(fact.id));
+  return {
+    facts,
+    imageIds: new Map([...record.imageIds].filter(([id]) => retained.has(id))),
+    sha256: createHash("sha256").update(JSON.stringify(facts)).digest("hex"),
+  };
+}
+
+export function planFactAblation(
+  record: PatientRecord,
+  caseId: string,
+  seed: string,
+  percent: 25 | 50,
+) {
+  if (!/^[0-9a-f]{64}$/.test(seed) || ![25, 50].includes(percent))
+    throw new Error("invalid_ablation_settings");
+  const protectedIds = record.facts
+    .filter((fact) => fact.text.startsWith("Initial presentation:"))
+    .map((fact) => fact.id);
+  if (!protectedIds.length) throw new Error("opening_facts_not_identified");
+  const protectedSet = new Set(protectedIds);
+  const ranked = record.facts
+    .filter((fact) => !protectedSet.has(fact.id))
+    .map((fact) => ({
+      id: fact.id,
+      rank: createHmac("sha256", Buffer.from(seed, "hex"))
+        .update(JSON.stringify(["fact-ablation-v1", caseId, fact.id]))
+        .digest("hex"),
+    }))
+    .sort((a, b) =>
+      a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : a.id < b.id ? -1 : 1,
+    );
+  const removedCount = Math.floor((ranked.length * percent) / 100 + 0.5);
+  const removedIds = ranked.slice(0, removedCount).map((fact) => fact.id);
+  const removed = new Set(removedIds);
+  const retainedIds = record.facts
+    .filter((fact) => !removed.has(fact.id))
+    .map((fact) => fact.id);
+  return {
+    percent,
+    protectedIds,
+    eligibleCount: ranked.length,
+    removedIds,
+    retainedIds,
+    actualRemovedFraction: ranked.length ? removedCount / ranked.length : 0,
+    originalSha256: record.sha256,
+    effectiveSha256: selectPatientFacts(record, retainedIds).sha256,
   };
 }

@@ -2,7 +2,11 @@ import { z } from "zod";
 import type { CaseSpec } from "@clinical/shared";
 import type { Provider } from "../lib/openrouter.js";
 import { SUPPORT_MODEL } from "./protocol.js";
-import { FACT_PACK_VERSION, patientRecord } from "./facts.js";
+import {
+  FACT_PACK_VERSION,
+  patientRecord,
+  selectPatientFacts,
+} from "./facts.js";
 import { PATIENT_PROMPT_V3 } from "./patient-prompt-v3.js";
 
 export const PATIENT_CHAT_VERSION = "clinical-patient-fact-ids-v4";
@@ -41,10 +45,18 @@ export async function answerPatient(
   c: CaseSpec,
   question: string,
   history: Array<{ question: string; answer: string }>,
-  version: typeof PATIENT_CHAT_VERSION | "clinical-patient-fact-ids-v3" = PATIENT_CHAT_VERSION,
+  version:
+    | typeof PATIENT_CHAT_VERSION
+    | "clinical-patient-fact-ids-v3" = PATIENT_CHAT_VERSION,
+  retainedFactIds?: readonly string[],
 ) {
-  const record = patientRecord(c);
-  const prompt = version === PATIENT_CHAT_VERSION ? PATIENT_PROMPT : PATIENT_PROMPT_V3;
+  const originalRecord = patientRecord(c);
+  const record =
+    retainedFactIds === undefined
+      ? originalRecord
+      : selectPatientFacts(originalRecord, retainedFactIds);
+  const prompt =
+    version === PATIENT_CHAT_VERSION ? PATIENT_PROMPT : PATIENT_PROMPT_V3;
   const reply = await provider.complete(
     SUPPORT_MODEL,
     [

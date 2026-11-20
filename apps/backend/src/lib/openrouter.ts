@@ -23,7 +23,10 @@ export class OpenRouter implements Provider {
     private settings: Settings,
     private transport: typeof fetch = fetch,
     private allowedModels: readonly string[] = MODEL_IDS,
-    private sampling: { reasoning?: { effort: "max" }; temperature?: number } = {},
+    private sampling: {
+      reasoning?: { effort: "max" | "high" };
+      temperature?: number;
+    } = {},
   ) {}
   async complete(
     model: string,

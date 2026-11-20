@@ -64,12 +64,17 @@ test("benchmark doctor sampling is scoped to its adapter, even when the patient 
     reasoning: { effort: "max" },
     temperature: 1,
   }).complete(model, []);
+  await new OpenRouter(settings, transport, [model], {
+    reasoning: { effort: "high" },
+    temperature: 1,
+  }).complete(model, []);
   await new OpenRouter(settings, transport, [model]).complete(model, []);
   assert.deepEqual(
     requests.map((r) => [r.reasoning, r.temperature]),
     [
       [{ effort: "max" }, undefined],
       [{ effort: "max" }, 1],
+      [{ effort: "high" }, 1],
       [undefined, undefined],
     ],
   );
