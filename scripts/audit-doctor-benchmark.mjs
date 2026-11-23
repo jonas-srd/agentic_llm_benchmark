@@ -16,15 +16,32 @@ import {
   planFactAblation,
 } from "../apps/backend/src/domain/facts.ts";
 import { judgeDiagnoses } from "../apps/backend/src/domain/judge.ts";
-const [input, reportPath] = process.argv.slice(2);
+const [input, reportPath, selectedIdsArgument] = process.argv.slice(2);
 assert(input, "Supply the current benchmark database to audit offline");
 const db = new DatabaseSync(input, { readOnly: true });
-const meta = Object.fromEntries(
+let meta = Object.fromEntries(
   db
     .prepare("select * from llm_metadata")
     .all()
     .map((x) => [x.key, x.value]),
 );
+let selectedRuns;
+if (selectedIdsArgument) {
+  const ids = selectedIdsArgument.split(",").map(Number);
+  assert(ids.length && ids.every(id => Number.isSafeInteger(id) && id > 0));
+  assert.equal(new Set(ids).size, ids.length);
+  selectedRuns = db.prepare(`select * from llm_runs where run_id in (${ids.map(() => "?").join(",")}) order by run_id`).all(...ids);
+  assert.equal(selectedRuns.length, ids.length);
+  const batches = new Set(selectedRuns.map(r => r.benchmark_batch_id));
+  assert.equal(batches.size, 1, "Selected runs must belong to one benchmark batch");
+  const batchId = selectedRuns[0].benchmark_batch_id;
+  if (batchId) {
+    meta = Object.fromEntries(db.prepare("select key,value from llm_benchmark_metadata where batch_id=?").all(batchId).map(x => [x.key, x.value]));
+    assert(meta.doctor_prompt_version, "Missing historical batch metadata");
+  }
+} else {
+  selectedRuns = db.prepare("select * from llm_runs where status='completed' order by run_id").all();
+}
 const {
   version: PROMPT_VERSION,
   systemPrompt: DOCTOR,
@@ -78,9 +95,7 @@ const media = {
     };
   },
 };
-for (const r of db
-  .prepare("select * from llm_runs where status='completed' order by run_id")
-  .all()) {
+for (const r of selectedRuns.filter(r => r.status === "completed")) {
   assert.equal(r.doctor_prompt_version, PROMPT_VERSION);
   assert.equal(r.doctor_prompt_question_words, DOCTOR_PROMPT_QUESTION_WORDS);
   assert.equal(r.doctor_max_question_words, MAX_DOCTOR_QUESTION_WORDS);
@@ -243,6 +258,7 @@ const report = {
   truncated_questions: truncated,
   questions_above_prompt_limit_within_hard_cap: betweenPromptAndCap,
   external_api_calls: 0,
+  ...(selectedIdsArgument ? { selected_run_ids: selectedRuns.map(r => r.run_id) } : {}),
 };
 if (reportPath) writeFileSync(reportPath, JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report));
